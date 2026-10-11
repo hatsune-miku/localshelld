@@ -203,10 +203,7 @@
                             >6 位动态码</label
                         ><input
                             id="credential"
-                            type="password"
-                            inputmode="numeric"
-                            autocomplete="one-time-code"
-                            maxlength="6"
+                            type="text"
                             placeholder="输入 6 位动态码"
                         />
                     </div>
@@ -246,13 +243,6 @@
             function updateCredentialMode() {
                 const totp = $("kind").value === "totp";
                 const input = $("credential");
-                input.value = "";
-                input.autocomplete = totp
-                    ? "one-time-code"
-                    : "current-password";
-                input.inputMode = totp ? "numeric" : "text";
-                if (totp) input.maxLength = 6;
-                else input.removeAttribute("maxlength");
                 input.placeholder = totp
                     ? "输入 6 位动态码"
                     : "输入 Master Password";

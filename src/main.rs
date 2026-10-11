@@ -1,5 +1,5 @@
 use std::{
-    io::{self, BufRead},
+    io::{self, BufRead, Write},
     path::PathBuf,
     process::Command,
 };
@@ -166,6 +166,30 @@ fn mode_config_path(path: Option<PathBuf>, user: bool) -> Result<PathBuf> {
     }
 }
 
+fn read_input_line(reader: &mut impl BufRead) -> io::Result<String> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "input ended before a line was provided",
+        ));
+    }
+    // Remove only the line ending; spaces and other characters are input data.
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+    Ok(line)
+}
+
+fn prompt_line(prompt: &str) -> Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+    Ok(read_input_line(&mut io::stdin().lock())?)
+}
+
 fn initialize(
     path: PathBuf,
     enable_totp: bool,
@@ -183,20 +207,15 @@ fn initialize(
         );
     }
     let mut password = if password_stdin {
-        let mut line = String::new();
-        io::stdin().lock().read_line(&mut line)?;
-        Zeroizing::new(line.trim_end_matches(['\r', '\n']).to_owned())
+        Zeroizing::new(read_input_line(&mut io::stdin().lock())?)
     } else {
-        let first = Zeroizing::new(rpassword::prompt_password("New Master Password: ")?);
-        let second = Zeroizing::new(rpassword::prompt_password("Confirm Master Password: ")?);
+        let first = Zeroizing::new(prompt_line("New Master Password: ")?);
+        let second = Zeroizing::new(prompt_line("Confirm Master Password: ")?);
         if *first != *second {
             bail!("passwords do not match");
         }
         first
     };
-    if password.chars().count() < 12 {
-        bail!("Master Password must contain at least 12 characters");
-    }
     let password_hash = hash_password(password.as_bytes())?;
     password.zeroize();
 
@@ -211,9 +230,7 @@ fn initialize(
         println!("\nAdd this account to Proton Authenticator (or another RFC 6238 app):");
         println!("URI: {}", totp.get_url());
         println!("Manual secret: {}", totp.get_secret_base32());
-        let mut code = Zeroizing::new(rpassword::prompt_password(
-            "Enter the current 6-digit code to confirm: ",
-        )?);
+        let mut code = Zeroizing::new(prompt_line("Enter the current 6-digit code to confirm: ")?);
         if !totp.check_current(code.trim()).unwrap_or(false) {
             code.zeroize();
             bail!("incorrect TOTP code; configuration was not written");
@@ -546,6 +563,24 @@ fn checked(command: &mut Command) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_input_accepts_empty_and_preserves_whitespace() {
+        for (input, expected) in [
+            ("\n", ""),
+            ("\r\n", ""),
+            ("x\n", "x"),
+            ("  密码\t \r\n", "  密码\t "),
+            ("no final newline", "no final newline"),
+            ("embedded\rcharacter\n", "embedded\rcharacter"),
+        ] {
+            assert_eq!(read_input_line(&mut input.as_bytes()).unwrap(), expected);
+        }
+        assert_eq!(
+            read_input_line(&mut "".as_bytes()).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
 
     #[test]
     fn user_mode_has_separate_configuration_and_no_elevation_bypass() {

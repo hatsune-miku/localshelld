@@ -58,7 +58,7 @@ cargo build --release
 ./target/release/localshelld init --totp
 ```
 
-初始化会提示输入并确认至少 12 字符的 Master Password。使用 `--totp` 时会显示 `otpauth://` URI 和手动 secret，并要求输入当前动态码确认绑定；配置确认成功前不会落盘。
+初始化会提示输入并确认 Master Password，不限制长度或字符组合，也接受空密码（输入空行）；空格按原样保留。终端输入使用普通文本回显，网页认证输入框也直接显示文本。密码仍只保存 Argon2id verifier。`--password-stdin` 从标准输入读取一行并省略重复确认，输入流提前结束则报错。使用 `--totp` 时会显示 `otpauth://` URI 和手动 secret，并要求输入当前动态码确认绑定；配置确认成功前不会落盘。
 
 开发运行（非管理员，仅用于本地验证）：
 
