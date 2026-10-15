@@ -2,12 +2,40 @@ import { type Page, expect, test } from '@playwright/test'
 
 async function login(page: Page) {
   await page.goto('/')
-  await expect(page.getByLabel('验证方式')).toHaveValue('totp')
+  await expect(page.getByLabel('验证方式')).toHaveValue('passkey')
   await page.getByLabel('验证方式').selectOption('password')
   await page.getByLabel('Master Password', { exact: true }).fill('browser test')
   await page.getByRole('button', { name: '验证身份', exact: true }).click()
   await expect(page.getByRole('heading', { name: '签发访问令牌' })).toBeVisible()
 }
+
+test('login defaults to passkey and keeps password and TOTP available', async ({ page }) => {
+  await page.goto('/')
+  const method = page.getByLabel('验证方式')
+  await expect(method).toHaveValue('passkey')
+  await expect(method.locator('option').first()).toHaveAttribute('value', 'passkey')
+  await expect(page.getByRole('button', { name: '使用通行密钥验证' })).toBeVisible()
+  await expect(page.locator('#login-value')).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/desktop-login.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: 'test-results/mobile-login.png', fullPage: true })
+  await method.selectOption('totp')
+  await expect(page.getByLabel('6 位动态码')).toHaveAttribute('inputmode', 'numeric')
+  await method.selectOption('password')
+  await expect(page.getByLabel('Master Password', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByLabel('验证方式')).toHaveValue('passkey')
+})
+
+test('passkey default keeps the localhost link when opened through an IP address', async ({ page }) => {
+  await page.goto('http://127.0.0.1:31819/')
+  await expect(page.getByLabel('验证方式')).toHaveValue('passkey')
+  await expect(page.getByRole('link', { name: '使用 localhost 打开通行密钥入口' })).toHaveAttribute(
+    'href',
+    'http://localhost:31819/'
+  )
+})
 
 test('sign in, issue, copy authorization text and revoke', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
@@ -43,7 +71,7 @@ test('passkey registration, authentication and token issuance use real WebAuthn'
   await page.getByRole('button', { name: '添加通行密钥' }).click()
   await expect(page.getByText('通行密钥已添加。', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '退出管理' }).click()
-  await page.getByLabel('验证方式').selectOption('passkey')
+  await expect(page.getByLabel('验证方式')).toHaveValue('passkey')
   await page.getByRole('button', { name: '使用通行密钥验证' }).click()
   await expect(page.getByRole('heading', { name: '签发访问令牌' })).toBeVisible()
   await page.getByRole('button', { name: '确认授权并签发' }).click()

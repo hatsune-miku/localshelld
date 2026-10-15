@@ -10,7 +10,7 @@ import { useAction } from '../../../useAction'
 import './index.scss'
 
 export function Login({ onLogin, scope }: { onLogin: (login: LoginResult) => void; scope: string }) {
-  const [kind, setKind] = useState('totp')
+  const [kind, setKind] = useState('passkey')
   const [value, setValue] = useState('')
   const action = useAction()
   function submit(event: FormEvent) {
@@ -30,9 +30,9 @@ export function Login({ onLogin, scope }: { onLogin: (login: LoginResult) => voi
       <form className="form-stack" onSubmit={submit}>
         <Field htmlFor="login-kind" label="验证方式">
           <ComboBox id="login-kind" value={kind} onChange={(event) => setKind(event.currentTarget.value)}>
+            <option value="passkey">通行密钥</option>
             <option value="password">Master Password</option>
             <option value="totp">Authenticator 动态码</option>
-            <option value="passkey">通行密钥</option>
           </ComboBox>
         </Field>
         {kind !== 'passkey' && (

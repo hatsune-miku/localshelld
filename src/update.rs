@@ -25,6 +25,20 @@ const API: &str = "https://api.github.com/repos/hatsune-miku/localshelld";
 const MAX_DOWNLOAD: u64 = 128 * 1024 * 1024;
 const MAX_JSON: u64 = 4 * 1024 * 1024;
 
+/// Reuse the same managed-registration checks for an idempotent installation.
+/// This starts a stopped service but never replaces or restarts a running one.
+pub(crate) fn reuse_installed_service(target: &Path, config: &Path) -> Result<bool> {
+    let Some(installed) = service::discover(target)? else {
+        return Ok(false);
+    };
+    ensure!(
+        installed.config == config.canonicalize()?,
+        "existing system service uses another configuration; registration was not changed"
+    );
+    installed.start_and_verify(None)?;
+    Ok(true)
+}
+
 #[derive(Args, Debug)]
 pub struct Options {
     /// Query releases without downloading, changing files, or stopping services.

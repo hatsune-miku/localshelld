@@ -21,6 +21,7 @@ use localshelld::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+mod installation;
 #[cfg(any(target_os = "macos", test))]
 mod launchd;
 mod update;
@@ -66,13 +67,29 @@ enum CommandKind {
         #[arg(long)]
         headless: bool,
     },
-    /// Register and start the system service or current-user autostart daemon.
+    /// Register and start both daemons, then complete trust pairing in the management UI.
     Install {
-        /// Install a login-started daemon for the current non-elevated user.
+        /// Install only the current non-elevated user's autostart daemon.
         #[arg(long)]
         user: bool,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// User configuration for a combined installation (defaults to the login user's directory).
+        #[arg(long, conflicts_with_all = ["user", "system_only"])]
+        user_config: Option<PathBuf>,
+        /// Explicitly install only the system service, for headless hosts.
+        #[arg(long, conflicts_with = "user")]
+        system_only: bool,
+    },
+    /// Internal non-root installation step invoked by the privileged installer.
+    #[command(hide = true)]
+    SetupUser {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        privileged_daemon: std::net::SocketAddr,
+        #[arg(long)]
+        start: bool,
     },
     /// Stop and unregister the native system service without deleting configuration.
     Uninstall {
@@ -159,13 +176,32 @@ async fn run_command(command: CommandKind) -> Result<()> {
             )
             .await
         }
-        CommandKind::Install { config, user } => {
-            if user {
+        CommandKind::Install {
+            config,
+            user,
+            user_config,
+            system_only,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                if user {
+                    require_user()?;
+                    installation::setup_user(config, None, true)
+                } else {
+                    installation::install(config_path(config)?, user_config, system_only)
+                }
+            })
+            .await?
+        }
+        CommandKind::SetupUser {
+            config,
+            privileged_daemon,
+            start,
+        } => {
+            tokio::task::spawn_blocking(move || {
                 require_user()?;
-                user_service::install(&mode_config_path(config, true)?)
-            } else {
-                install(config_path(config)?)
-            }
+                installation::setup_user(config, Some(privileged_daemon), start)
+            })
+            .await?
         }
         CommandKind::Uninstall { user } => {
             if user {
@@ -233,6 +269,17 @@ fn initialize(
     if user {
         require_user()?;
     }
+    initialize_config(path, enable_totp, force, password_stdin, user, None)
+}
+
+fn initialize_config(
+    path: PathBuf,
+    enable_totp: bool,
+    force: bool,
+    password_stdin: bool,
+    user: bool,
+    privileged_daemon: Option<std::net::SocketAddr>,
+) -> Result<()> {
     if path.exists() && !force {
         bail!(
             "{} already exists; use --force to replace it",
@@ -280,6 +327,9 @@ fn initialize(
     };
     if user {
         config.bind.set_port(USER_PORT);
+    }
+    if let Some(address) = privileged_daemon {
+        config.privileged_daemon = address;
     }
     config.save(&path)?;
     println!("Initialized {}", path.display());
@@ -423,7 +473,7 @@ fn windows_command(relative: &str) -> Result<Command> {
     ))
 }
 
-fn install(config_path: PathBuf) -> Result<()> {
+fn install_system(config_path: PathBuf) -> Result<()> {
     if !is_elevated()? {
         bail!("service installation requires Administrator/root");
     }
@@ -432,6 +482,10 @@ fn install(config_path: PathBuf) -> Result<()> {
         .context("failed to resolve configuration path")?;
     Config::load(&config_path)?;
     let executable = std::env::current_exe()?;
+    if update::reuse_installed_service(&executable.canonicalize()?, &config_path)? {
+        println!("Existing localshelld system service is running; registration was preserved.");
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     install_systemd(&executable, &config_path)?;
     #[cfg(windows)]
@@ -653,6 +707,43 @@ mod tests {
             cli.command,
             CommandKind::Uninstall { user: false }
         ));
+    }
+
+    #[test]
+    fn install_defaults_to_both_daemons_with_explicit_single_identity_options() {
+        assert!(matches!(
+            Cli::try_parse_from(["localshelld", "install"])
+                .unwrap()
+                .command,
+            CommandKind::Install {
+                user: false,
+                system_only: false,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["localshelld", "install", "--system-only"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["localshelld", "install", "--user-config", "user.toml"]).is_ok()
+        );
+        for arguments in [
+            vec!["localshelld", "install", "--user", "--system-only"],
+            vec![
+                "localshelld",
+                "install",
+                "--user",
+                "--user-config",
+                "user.toml",
+            ],
+            vec![
+                "localshelld",
+                "install",
+                "--system-only",
+                "--user-config",
+                "user.toml",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_err());
+        }
     }
 
     #[test]

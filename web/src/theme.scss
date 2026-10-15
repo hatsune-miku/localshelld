@@ -5,7 +5,6 @@
   --muted: #53657b;
   --accent: #245aa8;
   --line: #c3cedb;
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', 'DengXian', sans-serif;
   font-synthesis: none;
   font-variant-ligatures: none;
   color: var(--ink);
@@ -18,7 +17,6 @@ body {
   margin: 0;
 }
 .app-theme {
-  --cake-font: 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', 'DengXian', sans-serif;
   --cake-radius-small: 6px;
   --cake-radius-medium: 8px;
   --cake-radius-large: 10px;
@@ -27,7 +25,6 @@ body {
   --cake-shadow-strong: none;
   color: var(--ink);
   background: var(--page);
-  font-family: inherit;
   font-size: 15px;
   line-height: 1.6;
   min-height: 100dvh;
@@ -85,7 +82,6 @@ body {
   color: var(--muted);
 }
 .credential-value {
-  font-family: Consolas, 'SFMono-Regular', monospace;
   overflow-wrap: anywhere;
 }
 @media (prefers-reduced-motion: reduce) {

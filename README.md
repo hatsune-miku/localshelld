@@ -70,13 +70,17 @@ cargo build --release
 ./target/release/localshelld serve --allow-unelevated
 ```
 
-系统 daemon 在 Administrator/root 终端中安装：
+默认一次安装并立即启动系统 daemon 和当前登录用户的 daemon，随后手动建立互信。Windows 请使用同一登录用户的 Administrator 终端；Linux/macOS 请从该用户的登录会话通过 `sudo` 执行：
 
 ```powershell
 ./target/release/localshelld install
 ```
 
 Windows 注册为 `localshelld` 自启动服务并以 LocalSystem 运行；Linux 写入并启用 `localshelld.service`；macOS 写入 `/Library/LaunchDaemons/dev.localshelld.plist`，通过 launchd 以 root 自动运行。若初始化和安装使用不同账户，请在两条命令中都传入同一个绝对配置路径：`--config <path>`。二进制应放在稳定路径中，安装后不要移动它。
+
+安装器同时注册当前用户的登录自启动项，并立即启动用户 daemon（默认 `32120`）。若用户配置不存在，安装阶段就提示设置其独立 Master Password；也可以提前用 `init --user --totp` 初始化。已有用户配置、验证方式、配对密钥和记忆不会被覆盖，不会从系统端复制凭据，也不会自动建立互信。使用非默认用户配置时传入 `--user-config <path>`；已有配置的 `privileged_daemon` 必须指向这次安装的系统端。
+
+两个入口通过健康检查后，安装器才报告安装完成并显示手动配对说明。安装或启动失败会明确报错，不会等到第一次命令执行才启动用户端。已经安装系统端的旧用户可以在原二进制路径再次运行 `install` 补齐用户端：匹配的现有服务/任务会被复用，不重启运行中的进程；路径或配置不一致时保留原注册并报错。确实只需要系统服务的无头主机可显式使用 `install --system-only`，不会猜测登录用户或把用户端以 root/LocalSystem 运行。
 
 macOS 安装示例（先把二进制放到 `/usr/local/bin/localshelld`）：
 
@@ -101,7 +105,7 @@ sudo launchctl print system/dev.localshelld
 
 ## 用户态 daemon
 
-用户态 daemon 在普通用户终端中初始化并安装：
+完整 `install` 已包含用户 daemon。需要独立安装或管理用户端时，在普通用户终端执行以下命令（`install --user` 遇到未初始化的配置也会当场引导初始化）：
 
 ```powershell
 localshelld init --user --totp
@@ -125,11 +129,11 @@ Agent 连接 `http://127.0.0.1:32120/mcp`：
 
 ## Web 验证方式与桌面授权
 
-管理后台使用 Vite、React 和 CakeUI 构建，资源嵌入同一二进制，无需额外 Web 服务或 CDN。认证方式默认仍为 TOTP，密码输入保持普通文本并允许空密码。原有“复制授权文本”行为保留，也可单独复制令牌。
+管理后台使用 Vite、React 和 CakeUI 构建，资源嵌入同一二进制，无需额外 Web 服务或 CDN。认证方式默认选择通行密钥；尚未注册时可切换到 Master Password 或 TOTP。应用不覆盖组件库的字体设置，密码输入保持普通文本并允许空密码。原有“复制授权文本”行为保留，也可单独复制令牌。
 
 在“验证方式”中可以修改 Master Password，绑定/替换/移除 TOTP，添加或移除通行密钥。TOTP 必须输入当前动态码完成绑定；通行密钥由浏览器/系统认证器验证，私钥不交给 daemon。通行密钥注册和登录请使用 `http://localhost:32119/` 或 `http://localhost:32120/`，而不是 IP 地址；浏览器需支持 WebAuthn，系统与用户入口分别注册。管理登录仅在页面内存中保留，10 分钟后失效；改密码会清除全部管理登录，不会自动撤销已有执行令牌。
 
-要让系统端的 `sudo=false` 和高权限交互授权可用，先启动普通用户 daemon，再做一次显式配对：
+完整安装结束时两个 daemon 都已运行；使用 Agent 之前，应在管理页完成一次显式配对，使系统端的 `sudo=false` 和高权限交互授权可用：
 
 1. 登录 `http://localhost:32120/`，在“桌面授权”中生成配对码。
 2. 登录 `http://localhost:32119/`，填写用户 daemon 地址和配对码，完成配对。
