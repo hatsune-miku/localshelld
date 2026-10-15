@@ -22,9 +22,12 @@ def port():
         return sock.getsockname()[1]
 
 
-def request(base, path, body=None):
+def request(base, path, body=None, session=None):
     data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(base + path, data, {"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if session:
+        headers["Authorization"] = "Bearer " + session
+    req = urllib.request.Request(base + path, data, headers)
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=15) as response:
         return json.load(response)
 
@@ -102,7 +105,7 @@ def main():
                 ).replace('privileged_daemon = "127.0.0.1:32119"', f'privileged_daemon = "127.0.0.1:{root_port}"')
                 config.write_text(text)
                 prefix = [] if user else ["sudo", "-n", "--"]
-                process = subprocess.Popen([*prefix, str(binary), "serve", *mode, "--config", str(config)],
+                process = subprocess.Popen([*prefix, str(binary), "serve", *mode, "--headless", "--config", str(config)],
                                            start_new_session=True, stdout=subprocess.DEVNULL)
                 processes.append((process, not user))
                 health = wait_ready(f"http://127.0.0.1:{listen}", process)
@@ -114,6 +117,19 @@ def main():
             handle = entered["handle"]
             for sudo, uid in [(False, os.geteuid()), (True, 0)]:
                 result = request(user_url, "/v1/commands/run", {"handle": handle, "command": "id -u", "sudo": sudo})
+                assert result["success"] and int(result["output"].strip()) == uid, result
+            # Also exercise the privileged front door after explicit pairing.
+            root_session = request(root_url, "/v1/admin/login", {"credential": credential})["session"]
+            user_session = request(user_url, "/v1/admin/login", {"credential": credential})["session"]
+            pairing = request(user_url, "/v1/admin/pairing/new", {}, user_session)
+            request(root_url, "/v1/admin/pairing/connect", {
+                "code": pairing["code"], "user_daemon": f"127.0.0.1:{user_port}"
+            }, root_session)
+            root_entered = request(root_url, "/v1/sessions/enter", {"token": token})
+            for sudo, uid in [(False, os.geteuid()), (True, 0)]:
+                result = request(root_url, "/v1/commands/run", {
+                    "handle": root_entered["handle"], "command": "id -u", "sudo": sudo
+                })
                 assert result["success"] and int(result["output"].strip()) == uid, result
             local_token = request(user_url, "/v1/admin/tokens/issue", {"credential": credential})["token"]
             local = request(user_url, "/v1/sessions/enter", {"token": local_token})

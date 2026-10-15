@@ -1,0 +1,39 @@
+.tokens-view {
+  .issued-token {
+    max-width: 600px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 24px;
+    padding: 20px;
+    background: #eef4fb;
+    border-radius: 8px;
+  }
+  .authorization-preview {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .authorization-copy {
+    overflow-wrap: anywhere;
+    line-height: 1.7;
+  }
+  .token-records {
+    margin-top: 36px;
+  }
+  .token-records-heading {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .token-id {
+    display: block;
+  }
+  .token-date {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+}

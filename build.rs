@@ -9,6 +9,11 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=web/dist");
+    assert!(
+        std::path::Path::new("web/dist/index.html").is_file(),
+        "build the embedded web UI first: pnpm --dir web install --frozen-lockfile && pnpm --dir web build"
+    );
     println!("cargo:rerun-if-env-changed=LOCALSHELLD_RELEASE_TAG");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/packed-refs");

@@ -30,6 +30,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-build
       - name: Validate and embed the release tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -49,7 +50,7 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
-      - run: cargo test --all-targets
+      - run: cargo test --workspace --all-targets
       - run: cargo build --release
       - name: Verify embedded version
         if: startsWith(github.ref, 'refs/tags/')

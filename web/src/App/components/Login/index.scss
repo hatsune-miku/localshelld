@@ -1,0 +1,13 @@
+.login-view {
+  margin: 52px auto auto;
+  padding: 36px;
+  background: var(--surface);
+  width: min(100%, 560px);
+  border-radius: 10px;
+}
+@media (max-width: 720px) {
+  .login-view {
+    margin-top: 24px;
+    padding: 26px 20px;
+  }
+}

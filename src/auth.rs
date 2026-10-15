@@ -138,6 +138,14 @@ impl AuthManager {
         Ok((token, record))
     }
 
+    pub fn replace_password(&mut self, hash: String) {
+        self.password_hash = hash;
+    }
+
+    pub fn replace_totp(&mut self, secret: Option<Zeroizing<Vec<u8>>>) {
+        self.totp_secret = secret;
+    }
+
     pub fn verify_token(&self, token: &str) -> Result<TokenAuthorization, AuthError> {
         let record = self.token_record(token)?;
         if record.revoked {

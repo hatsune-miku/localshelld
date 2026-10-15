@@ -1,0 +1,27 @@
+.desktop-settings {
+  .desktop-section {
+    margin-top: 32px;
+  }
+  .desktop-warning {
+    color: #8d4b12;
+    margin: 0;
+  }
+  .disconnect-button {
+    margin-top: 12px;
+  }
+  .remembered-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 20px;
+  }
+  .remembered-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 10px 0;
+    max-width: 540px;
+  }
+  .remembered-name {
+    overflow-wrap: anywhere;
+  }
+}

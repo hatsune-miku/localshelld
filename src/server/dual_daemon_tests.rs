@@ -74,7 +74,7 @@ async fn routes_explicit_sudo_and_isolates_persistent_shell_state() {
             .await
             .unwrap_err()
             .status,
-        StatusCode::FORBIDDEN
+        StatusCode::SERVICE_UNAVAILABLE
     );
     for (sudo, marker) in [(false, "user"), (true, "root")] {
         let script = if cfg!(windows) {
@@ -236,13 +236,14 @@ async fn http_and_mcp_require_boolean_sudo_and_only_expose_new_names() {
     assert_eq!(
         names,
         [
-            "localshelld_enter",
+            "localshelld_enter_interactive",
+            "localshelld_enter_with_preauthorized_credential",
             "localshelld_run",
             "localshelld_destroy_session",
             "localshelld_revoke_token"
         ]
     );
-    let (_, rpc) = super::tests::request(&app, "/mcp", json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"localshelld_enter", "arguments":{"token":token, "confirm_text":"OK"}}})).await;
+    let (_, rpc) = super::tests::request(&app, "/mcp", json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"localshelld_enter_with_preauthorized_credential", "arguments":{"token":token, "confirm_text":"OK"}}})).await;
     let handle = rpc["result"]["structuredContent"]["handle"]
         .as_str()
         .unwrap();

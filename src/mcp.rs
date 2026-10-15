@@ -64,7 +64,19 @@ async fn call_tool(state: &AppState, params: Value) -> Result<Value, ApiError> {
         .cloned()
         .unwrap_or_else(|| json!({}));
     match name {
-        "localshelld_enter" => {
+        "localshelld_enter_interactive" => {
+            if string_arg(&arguments, "confirm_text")? != "OK" {
+                return Err(ApiError::bad_request("confirm_text must equal OK"));
+            }
+            let result = state
+                .enter_interactive(
+                    string_arg(&arguments, "agent_name")?,
+                    string_arg(&arguments, "request_reason")?,
+                )
+                .await?;
+            tool_json(result)
+        }
+        "localshelld_enter_with_preauthorized_credential" => {
             let token = string_arg(&arguments, "token")?;
             let confirm_text = string_arg(&arguments, "confirm_text")?;
             if confirm_text != "OK" {
@@ -142,7 +154,7 @@ mod tests {
         let definitions = tool_definitions();
         let text = definitions.to_string();
         for tool in [
-            "localshelld_enter",
+            "localshelld_enter_with_preauthorized_credential",
             "localshelld_run",
             "localshelld_destroy_session",
             "localshelld_revoke_token",

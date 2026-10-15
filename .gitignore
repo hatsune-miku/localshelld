@@ -1,5 +1,10 @@
 # Rust / Cargo build output
 /target/
+/web/node_modules/
+/web/dist/
+/web/test-results/
+/web/playwright-report/
+/web/*.tsbuildinfo
 **/*.rs.bk
 rust-project.json
 

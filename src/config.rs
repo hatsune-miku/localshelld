@@ -63,14 +63,8 @@ impl Config {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            set_private_dir(parent)?;
-        }
         let text = toml::to_string_pretty(self)?;
-        fs::write(path, text)?;
-        set_private_file(path)?;
-        Ok(())
+        crate::storage::write_private(path, text.as_bytes())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -175,6 +169,9 @@ pub fn unseal(secret: &SealedSecret, key: &[u8; 32]) -> Result<Zeroizing<Vec<u8>
     let nonce = STANDARD
         .decode(&secret.nonce)
         .context("invalid TOTP nonce")?;
+    if nonce.len() != 12 {
+        bail!("invalid TOTP nonce length");
+    }
     let ciphertext = STANDARD
         .decode(&secret.ciphertext)
         .context("invalid TOTP ciphertext")?;
@@ -185,26 +182,26 @@ pub fn unseal(secret: &SealedSecret, key: &[u8; 32]) -> Result<Zeroizing<Vec<u8>
 }
 
 #[cfg(unix)]
-fn set_private_file(path: &Path) -> Result<()> {
+pub(crate) fn set_private_file(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn set_private_dir(path: &Path) -> Result<()> {
+pub(crate) fn set_private_dir(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn set_private_file(path: &Path) -> Result<()> {
+pub(crate) fn set_private_file(path: &Path) -> Result<()> {
     restrict_windows_acl(path, false)
 }
 
 #[cfg(windows)]
-fn set_private_dir(path: &Path) -> Result<()> {
+pub(crate) fn set_private_dir(path: &Path) -> Result<()> {
     restrict_windows_acl(path, true)
 }
 

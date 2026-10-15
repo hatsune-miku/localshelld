@@ -14,7 +14,7 @@ localshelld 是面向有经验的设备所有者和维护人员个人自用的�
 
 整个过程由用户掌控：
 
-- **临时委托**：用户签发令牌交给 Agent，决定授权时长，并可随时撤销。
+- **临时委托**：用户可签发令牌，或直接在桌面弹窗中批准 Agent 的请求；授权可随时撤销。
 - **直接执行**：Agent 使用 localshelld 完成用户交代的工作，无需反复处理沙箱权限限制。
 - **原生脚本体验**：Windows 命令交给持久化 `pwsh`，Linux/macOS 命令交给持久化 `/bin/bash`，由原生 shell 解析。
 - **少打扰**：一个 token 自动复用一个会话，变量、工作目录和环境可以跨命令保持，不必每执行一步都重新授权。
@@ -49,11 +49,15 @@ Agent 判断任务需要本机执行能力
 - Windows 10/11：安装 [PowerShell 7 (`pwsh`)](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
 - Linux：使用 `/bin/bash`，自动安装服务需要 systemd
 - macOS：使用系统 `/bin/bash`（兼容 Bash 3.2）和 launchd；支持 Apple Silicon 与 Intel
-- 从源码构建需要 Rust stable
+- 从源码构建需要 Rust stable、Node.js 22 与 pnpm 10.14；先构建 Web 资源，再构建 Rust
+- Linux 图形授权需要登录桌面和 WebKitGTK 4.1 / GTK 3；Debian/Ubuntu 构建依赖为 `libwebkit2gtk-4.1-dev libgtk-3-dev libssl-dev pkg-config`
+- Windows 授权窗口使用 Win32 原生控件，不依赖 WebView2；编译 WebAuthn 所需的 OpenSSL 时需要 Perl/NASM
 
 ## 构建与初始化
 
 ```powershell
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
 cargo build --release
 ./target/release/localshelld init --totp
 ```
@@ -92,7 +96,7 @@ sudo launchctl print system/dev.localshelld
 系统 daemon 默认监听 `127.0.0.1:32119`，在此签发的令牌允许高权限操作：
 
 - 管理 UI：`http://127.0.0.1:32119/`
-- 系统 MCP：`http://127.0.0.1:32119/mcp`（仅接受 `sudo=true`）
+- 系统 MCP：`http://127.0.0.1:32119/mcp`（配对用户 daemon 后，也支持 `sudo=false`）
 - 健康检查：`http://127.0.0.1:32119/health`
 
 ## 用户态 daemon
@@ -113,11 +117,33 @@ localshelld install --user
 Agent 连接 `http://127.0.0.1:32120/mcp`：
 
 - 在用户页面 `http://127.0.0.1:32120/` 签发的令牌，只允许 `sudo=false`。系统 daemon 未运行时也可使用。
-- 在系统页面 `http://127.0.0.1:32119/` 签发的令牌，通过用户态 MCP 进入后同时允许 `sudo=false` 和 `sudo=true`。`localshelld_enter` 返回 `sudo_available`，说明当前授权是否允许高权限操作。
+- 在系统页面 `http://127.0.0.1:32119/` 签发的令牌，通过用户态 MCP 进入后同时允许 `sudo=false` 和 `sudo=true`。`localshelld_enter_with_preauthorized_credential` 返回 `sudo_available`，说明当前授权是否允许高权限操作。
 - `sudo=false` 继承用户 daemon 的账户和环境，`sudo=true` 由系统 daemon 的账户执行。两个 shell 的变量、函数、工作目录和环境分别保持，不在权限之间复制。参数必填，失败时不会自动提权或换身份重试。
 - 销毁双权限会话会终止两个 shell。高权限令牌撤销、到期、系统 daemon 关闭或通信失败会关闭其关联的用户 shell；正在运行的命令也会取消。用户态独立令牌不受系统 daemon 重启影响。
 
 用户 daemon 向系统 daemon 传递用户交给它的令牌与命令。Master Password 和 TOTP 用于各自本地页面的签发与管理；执行接口使用 token 和 handle。两种身份的可访问资源由操作系统账户权限决定。
+
+## Web 验证方式与桌面授权
+
+管理后台使用 Vite、React 和 CakeUI 构建，资源嵌入同一二进制，无需额外 Web 服务或 CDN。认证方式默认仍为 TOTP，密码输入保持普通文本并允许空密码。原有“复制授权文本”行为保留，也可单独复制令牌。
+
+在“验证方式”中可以修改 Master Password，绑定/替换/移除 TOTP，添加或移除通行密钥。TOTP 必须输入当前动态码完成绑定；通行密钥由浏览器/系统认证器验证，私钥不交给 daemon。通行密钥注册和登录请使用 `http://localhost:32119/` 或 `http://localhost:32120/`，而不是 IP 地址；浏览器需支持 WebAuthn，系统与用户入口分别注册。管理登录仅在页面内存中保留，10 分钟后失效；改密码会清除全部管理登录，不会自动撤销已有执行令牌。
+
+要让系统端的 `sudo=false` 和高权限交互授权可用，先启动普通用户 daemon，再做一次显式配对：
+
+1. 登录 `http://localhost:32120/`，在“桌面授权”中生成配对码。
+2. 登录 `http://localhost:32119/`，填写用户 daemon 地址和配对码，完成配对。
+3. Agent 可继续连接任一 MCP 入口。系统端的普通命令会交给配对的用户进程，绝不在 root/管理员 shell 中假装降权执行。
+
+配对码是两个 daemon 之间的共享密钥，不是交给 Agent 的访问令牌。仅与自己控制的用户进程配对。未配对时，系统端的普通命令会返回可操作的配置错误；直接使用用户入口及其令牌执行 `sudo=false` 不需要配对。更改端口后需更新配置并重新配对。
+
+`localshelld_enter_interactive` 需要 `agent_name`、`request_reason` 和 `confirm_text: "OK"`，不需要传 token。已有用户 daemon 负责显示窗口，不新增 GUI daemon：Windows 为原生 Win32 对话框；Linux/macOS 使用系统 WebView。后者可能有 WebView 运行时子进程，命令执行也会创建 shell/命令子进程，不能把“两个 daemon”理解成整个进程树永远只有两个进程。
+
+窗口原样显示缘由，包含接受、拒绝、忽略、记住选择及附加说明。忽略或关闭窗口不会立即拒绝，而是等到原请求的 60,000ms 截止时间；附加说明通过 `btw` 返回。接受后返回 handle，内部创建的 24 小时授权记录可在签发端令牌列表中撤销，不返回原始 token。记忆按 `agent_name` 精确匹配，持久化到磁盘；名称是代理自报信息，不是身份认证。自动接受的结果不标记为自动，也不声称本次有人点击；自动拒绝明确返回 `automatic: true`。
+
+配对后的交互请求由系统端统一管理记忆；在系统管理页点击“清除所有记忆”即可重置这些选择。未配对用户入口的普通权限记忆由用户管理页清除。清除记忆不会撤销已经建立的会话。
+
+Windows 对话框由系统处理 Tab/Shift+Tab、回车、Esc 和 Alt 快捷键。默认按钮为“忽略”，附加说明内回车用于换行。窗口按显示器 DPI 调整控件和系统消息字体，并遵循系统字体平滑设置。后台 IO、认证和 IPC 不运行在 GUI 线程。`serve --user --headless` 可禁用弹窗；没有桌面或没有可用配对端时会明确报错，不自动批准。
 
 ## 从旧名称迁移
 
@@ -171,9 +197,9 @@ http://127.0.0.1:32120/mcp
 }
 ```
 
-具体配置文件位置取决于所使用的 Agent。连接成功后应能看到 `localshelld_enter`、`localshelld_run`、`localshelld_destroy_session` 和 `localshelld_revoke_token` 四个工具。
+具体配置文件位置取决于所使用的 Agent。连接成功后应能看到 `localshelld_enter_interactive`、`localshelld_enter_with_preauthorized_credential`、`localshelld_run`、`localshelld_destroy_session` 和 `localshelld_revoke_token` 五个工具。原 `localshelld_enter` 已移除，需要刷新客户端工具列表。新长名称为 47 个 ASCII 字符，符合 [MCP 的 1–128 字符命名建议](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names)；客户端若额外拼接命名空间，应另行检查其限制。
 
-MCP 工具说明会明确当前平台和 shell。Agent 应按 `localshelld_enter` 返回的 `shell`、`platform` 使用对应语法；Windows PowerShell 脚本不能直接用于 Linux/macOS Bash 会话。
+MCP 工具说明会明确当前平台和 shell。Agent 应按 `localshelld_enter_with_preauthorized_credential` 返回的 `shell`、`platform` 使用对应语法；Windows PowerShell 脚本不能直接用于 Linux/macOS Bash 会话。
 
 例如普通用户执行：`localshelld_run({"handle":"…","command":"whoami","sudo":false})`。使用管理员/root 身份执行时传 `sudo:true`，对应会话的 `sudo_available` 为 `true`。
 
@@ -216,17 +242,25 @@ HTTP 与 MCP 均为本机 loopback 接口，配置不支持远程监听地址。
 
 更详细的可行性与设计取舍见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
+Windows 内核能力本次只做调研，不包含驱动代码、驱动安装或系统安全设置变更。签名路径、账号门槛和成本见 [docs/WINDOWS-DRIVER-SIGNING.md](docs/WINDOWS-DRIVER-SIGNING.md)。
+
 ## 验证
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+pnpm --dir web format:check
+pnpm --dir web test
+pnpm --dir web exec playwright install chromium
+pnpm --dir web test:e2e
 ```
 
 集成测试调用本平台 shell，验证管道、通配符、多行、Unicode、错误流、退出码、状态继承、截断后同步、可选超时、无限时命令取消，以及 HTTP 签发/复用/执行/撤销生命周期。所需 shell 缺失会让测试失败。CI 覆盖 Windows x86_64、Linux x86_64、macOS Apple Silicon 和 Intel，macOS 使用系统 Bash 3.2。
 
 双 daemon 测试使用真实 loopback HTTP 验证路由、独立状态、令牌权限、到期、撤销和关闭级联。Linux/macOS CI 另用 `scripts/test-dual-daemon.py` 启动不同 UID 的真实进程，检查两种 `sudo` 模式的 `id -u` 输出；它不安装系统服务。
+
+浏览器测试使用临时配置和虚拟 WebAuthn 认证器，验证注册、登录、签发、复制与撤销，不读取真实凭据。Win32 适配器测试覆盖真实原生控件、Unicode、DPI、到期和关闭回传。`cargo run --example desktop_smoke` 可打开一个不连接 daemon、不创建 shell、不会授予权限的桌面测试窗口；用于人工检查焦点和键盘操作。
 
 `main` 分支 push 触发 `CI` 后，只有全部平台测试、构建并上传成品成功，`Release Candidate` 才会接续运行。它按平台分别下载该次 CI 成品（不重复构建），打包为 Windows ZIP、Linux/macOS tar.gz，生成 `SHA256SUMS`，并以 `v<项目版本>-rc.<CI序号>.<重试序号>` 创建 GitHub prerelease。PR 检查不会发布 RC；正式版 `Release` 工作流也明确排除 `-rc.*` tag。重试发布用的 CI 时需重跑全部平台；打包阶段会拒绝不同重试序号的版本混装。
 

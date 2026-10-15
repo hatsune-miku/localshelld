@@ -118,6 +118,21 @@ impl Peer {
         Ok(())
     }
 
+    pub async fn inspect(&self, handle: &str) -> Result<Option<i64>, ApiError> {
+        #[derive(Deserialize)]
+        struct Validation {
+            expires_at: Option<i64>,
+        }
+        let result: Validation = self
+            .post(
+                "/v1/sessions/validate",
+                json!({"handle":handle}),
+                Some(Duration::from_secs(5)),
+            )
+            .await?;
+        Ok(result.expires_at)
+    }
+
     pub async fn destroy(&self, handle: &str) -> Result<(), ApiError> {
         let _: Value = self
             .post(

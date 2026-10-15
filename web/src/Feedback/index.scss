@@ -1,0 +1,13 @@
+.feedback {
+  &:empty {
+    display: none;
+  }
+  min-height: 1.5em;
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  &[data-error='true'] {
+    color: #a32335;
+  }
+}

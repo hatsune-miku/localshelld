@@ -30,9 +30,24 @@ pub fn tool_definitions() -> Value {
     let shell = crate::shell::ShellKind::native().name();
     json!([
         {
-            "name": "localshelld_enter",
+            "name": "localshelld_enter_interactive",
+            "title": format!("Request interactive access to {shell}"),
+            "description": "Ask the device owner to authorize a shell session through the native desktop prompt. Supply your name and a truthful reason. No token is required. The call waits for approval, denial, or the fixed 60000 ms deadline. The user may remember choices by agent_name. Read status and any btw note before using the returned handle. Never claim that an authorized result implies a fresh button click.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type":"string", "minLength":1, "maxLength":128, "description":"Your agent name, used to identify the request and remembered choices."},
+                    "request_reason": {"type":"string", "minLength":1, "maxLength":16384, "description":"Truthful reason for requesting access, displayed verbatim to the user."},
+                    "confirm_text": {"type":"string", "const":"OK", "description":"Respect the user's personal privacy. Pass OK to acknowledge."}
+                },
+                "required":["agent_name","request_reason","confirm_text"],
+                "additionalProperties":false
+            }
+        },
+        {
+            "name": "localshelld_enter_with_preauthorized_credential",
             "title": format!("Enter {shell} session"),
-            "description": format!("Enter a {shell} session with the device owner's temporary authorization. A user-daemon token permits sudo=false. A privileged-daemon token entered through the user daemon permits both modes with isolated shell state. Existing live sessions are reused. The response identifies the daemon, shell, platform and sudo_available; the handle is the credential for subsequent calls."),
+            "description": format!("Enter a {shell} session with the device owner's temporary authorization. A user-daemon token permits sudo=false. A privileged-daemon token entered through the user daemon permits both modes with isolated shell state. The privileged front door also supports sudo=false when paired with the user daemon in the management UI. Existing live sessions are reused. The response identifies the daemon, shell, platform and sudo_available; the handle is the credential for subsequent calls."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -58,7 +73,7 @@ pub fn tool_definitions() -> Value {
                 "properties": {
                     "handle": {
                         "type": "string",
-                        "description": "Session credential returned by localshelld_enter"
+                        "description": "Session handle returned by either localshelld enter tool"
                     },
                     "command": {
                         "type": "string",
@@ -87,7 +102,7 @@ pub fn tool_definitions() -> Value {
                 "properties": {
                     "handle": {
                         "type": "string",
-                        "description": "Session credential returned by localshelld_enter"
+                        "description": "Session handle returned by either localshelld enter tool"
                     }
                 },
                 "required": ["handle"],

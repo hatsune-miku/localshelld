@@ -1,0 +1,107 @@
+.workspace {
+  max-width: 1120px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: 32px 36px 20px;
+  display: flex;
+  flex-direction: column;
+  .workspace-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding-bottom: 26px;
+    .workspace-title {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+    .workspace-scope {
+      margin-right: auto;
+      color: var(--muted);
+      font-size: 14px;
+    }
+  }
+  .workspace-body {
+    display: grid;
+    grid-template-columns: 174px minmax(0, 1fr);
+    gap: 36px;
+    flex: 1;
+  }
+  .workspace-nav {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding-top: 16px;
+    .workspace-nav-item {
+      justify-content: flex-start;
+      padding: 12px 14px;
+      text-align: left;
+    }
+    .workspace-nav-item[aria-current='page'] {
+      background: #e2eaf5;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .workspace-nav-note {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 24px 14px 0;
+      line-height: 1.65;
+    }
+  }
+  .workspace-content {
+    background: var(--surface);
+    padding: 30px 32px;
+    border-radius: 10px;
+    min-width: 0;
+  }
+  .workspace-footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--muted);
+    padding-top: 24px;
+  }
+  .workspace-endpoint {
+    overflow-wrap: anywhere;
+  }
+  .connection-error {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+    padding: 20px;
+    color: #a32335;
+  }
+}
+@media (max-width: 720px) {
+  .workspace {
+    padding: 22px 16px 16px;
+    .workspace-header {
+      padding-bottom: 16px;
+      gap: 10px;
+    }
+    .workspace-body {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .workspace-nav {
+      flex-direction: row;
+      flex-wrap: wrap;
+      padding-top: 0;
+      gap: 4px;
+      .workspace-nav-note {
+        display: none;
+      }
+    }
+    .workspace-content {
+      padding: 24px 18px;
+    }
+  }
+}

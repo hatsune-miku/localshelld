@@ -1,0 +1,102 @@
+import { type Page, expect, test } from '@playwright/test'
+
+async function login(page: Page) {
+  await page.goto('/')
+  await expect(page.getByLabel('验证方式')).toHaveValue('totp')
+  await page.getByLabel('验证方式').selectOption('password')
+  await page.getByLabel('Master Password', { exact: true }).fill('browser test')
+  await page.getByRole('button', { name: '验证身份', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '签发访问令牌' })).toBeVisible()
+}
+
+test('sign in, issue, copy authorization text and revoke', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await login(page)
+  await page.getByRole('button', { name: '确认授权并签发' }).click()
+  await expect(page.getByLabel('本次访问令牌')).toHaveValue(/^[a-zA-Z0-9]{22}$/)
+  const token = await page.getByLabel('本次访问令牌').inputValue()
+  await page.getByRole('button', { name: '复制授权文本' }).click()
+  const copied = await page.evaluate(() => navigator.clipboard.readText())
+  expect(copied).toContain(token)
+  expect(copied).toContain('I, an experienced developer')
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('row').filter({ hasText: '有效' }).last().getByRole('button', { name: '撤销' }).click()
+  await expect(page.getByText('令牌已撤销。', { exact: true })).toBeVisible()
+})
+
+test('passkey registration, authentication and token issuance use real WebAuthn', async ({ page, context }) => {
+  const cdp = await context.newCDPSession(page)
+  await cdp.send('WebAuthn.enable')
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2',
+      transport: 'internal',
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  })
+  await login(page)
+  await page.getByRole('button', { name: '验证方式', exact: true }).click()
+  await page.getByLabel('名称', { exact: true }).fill('browser virtual passkey')
+  await page.getByRole('button', { name: '添加通行密钥' }).click()
+  await expect(page.getByText('通行密钥已添加。', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '退出管理' }).click()
+  await page.getByLabel('验证方式').selectOption('passkey')
+  await page.getByRole('button', { name: '使用通行密钥验证' }).click()
+  await expect(page.getByRole('heading', { name: '签发访问令牌' })).toBeVisible()
+  await page.getByRole('button', { name: '确认授权并签发' }).click()
+  await expect(page.getByLabel('本次访问令牌')).toHaveValue(/^[a-zA-Z0-9]{22}$/)
+  await page.getByRole('button', { name: '验证方式', exact: true }).click()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: '移除', exact: true }).click()
+  await expect(page.getByText('通行密钥已移除。', { exact: true })).toBeVisible()
+  await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId })
+})
+
+test('mobile layout does not overflow and settings remain available', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await login(page)
+  await page.getByRole('button', { name: '验证方式', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Authenticator', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: 'test-results/mobile-credentials.png', fullPage: true })
+  await page.getByRole('button', { name: '桌面授权', exact: true }).click()
+  await page.getByRole('button', { name: '清除所有记忆' }).click()
+  await expect(page.getByText('已清除所有代理的自动选择。')).toBeVisible()
+})
+
+test('consent content is literal text and returns choice plus note only through native IPC', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__LOCALSHELLD_PROMPT__ = {
+      id: 'test',
+      agent_name: 'Test agent',
+      request_reason: 'literal <script>alert(1)</script>\nsecond line',
+      scope: '仅回归测试，不执行命令',
+      expires_at_ms: Date.now() + 60000,
+    }
+    window.ipc = {
+      postMessage: (message: string) => {
+        document.body.dataset.reply = message
+      },
+    }
+  })
+  await page.goto('/consent.html')
+  await expect(page.getByLabel('代理提供的请求缘由')).toHaveText('literal <script>alert(1)</script>\nsecond line')
+  await page.getByLabel('附加说明', { exact: true }).fill('additional note')
+  await page.getByRole('checkbox').check()
+  await page.getByRole('button', { name: '接受', exact: true }).click()
+  expect(await page.evaluate(() => JSON.parse(document.body.dataset.reply!))).toEqual({
+    choice: 'accept',
+    remember: true,
+    btw: 'additional note',
+  })
+})
+
+test('desktop overview renders cleanly', async ({ page }) => {
+  await login(page)
+  await page.screenshot({ path: 'test-results/desktop-tokens.png', fullPage: true })
+  await page.getByRole('button', { name: '桌面授权', exact: true }).click()
+  await page.screenshot({ path: 'test-results/desktop-settings.png', fullPage: true })
+})

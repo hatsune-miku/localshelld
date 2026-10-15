@@ -1,0 +1,98 @@
+:root {
+  --page: #f3f6fa;
+  --surface: #fff;
+  --ink: #1b2b3f;
+  --muted: #53657b;
+  --accent: #245aa8;
+  --line: #c3cedb;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', 'DengXian', sans-serif;
+  font-synthesis: none;
+  font-variant-ligatures: none;
+  color: var(--ink);
+  background: var(--page);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+.app-theme {
+  --cake-font: 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', 'DengXian', sans-serif;
+  --cake-radius-small: 6px;
+  --cake-radius-medium: 8px;
+  --cake-radius-large: 10px;
+  --cake-radius-dialog: 14px;
+  --cake-shadow: none;
+  --cake-shadow-strong: none;
+  color: var(--ink);
+  background: var(--page);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100dvh;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.section-title {
+  font-size: 22px;
+  line-height: 1.4;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.subsection-title {
+  font-size: 17px;
+  line-height: 1.45;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+.description {
+  color: var(--muted);
+  margin: 0 0 24px;
+  max-width: 70ch;
+}
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  max-width: 540px;
+}
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.content-link {
+  color: var(--accent);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.content-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.data-table-wrap {
+  overflow-x: auto;
+}
+.data-table {
+  min-width: 540px;
+  width: 100%;
+}
+.empty-state {
+  padding: 20px 0;
+  color: var(--muted);
+}
+.credential-value {
+  font-family: Consolas, 'SFMono-Regular', monospace;
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}

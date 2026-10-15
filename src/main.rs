@@ -62,6 +62,9 @@ enum CommandKind {
         /// Development only: permit starting without administrator/root identity.
         #[arg(long)]
         allow_unelevated: bool,
+        /// Disable desktop prompts (ordinary shell access still works).
+        #[arg(long)]
+        headless: bool,
     },
     /// Register and start the system service or current-user autostart daemon.
     Install {
@@ -91,15 +94,44 @@ enum CommandKind {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "localshelld=info".into()),
         )
         .init();
-    match Cli::parse().command {
+    let command = Cli::parse().command;
+    let runtime = tokio::runtime::Runtime::new()?;
+    if let CommandKind::Serve {
+        user: true,
+        config,
+        headless: false,
+        ..
+    } = &command
+        && localshelld::desktop::available()
+    {
+        require_user()?;
+        let path = mode_config_path(config.clone(), true)?;
+        let desktop = localshelld::desktop::Desktop::new()?;
+        let broker = desktop.broker();
+        let stop = desktop.stop_callback();
+        runtime.spawn(async move {
+            let result =
+                serve_mode_with_consent_until(path, false, true, Some(broker), shutdown_signal())
+                    .await;
+            if let Err(error) = &result {
+                tracing::error!(%error, "user daemon stopped");
+            }
+            stop(if result.is_ok() { 0 } else { 1 });
+        });
+        desktop.run();
+    }
+    runtime.block_on(run_command(command))
+}
+
+async fn run_command(command: CommandKind) -> Result<()> {
+    match command {
         CommandKind::Init {
             user,
             config,
@@ -117,6 +149,7 @@ async fn main() -> Result<()> {
             user,
             config,
             allow_unelevated,
+            headless: _,
         } => {
             serve_mode_until(
                 mode_config_path(config, user)?,
@@ -271,6 +304,19 @@ async fn serve_mode_until<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    serve_mode_with_consent_until(path, allow_unelevated, user, None, shutdown).await
+}
+
+async fn serve_mode_with_consent_until<F>(
+    path: PathBuf,
+    allow_unelevated: bool,
+    user: bool,
+    consent: Option<localshelld::consent::ConsentBroker>,
+    shutdown: F,
+) -> Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     if user {
         require_user()?;
     } else if !allow_unelevated && !is_elevated()? {
@@ -290,11 +336,15 @@ where
     tracing::info!(bind = %config.bind, "runtime token store initialized");
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     println!("localshelld management UI: http://{}/", config.bind);
-    let state = if user {
+    let mut state = if user {
         AppState::user(config, auth)?
     } else {
         AppState::new(config, auth)
-    };
+    }
+    .with_storage(path)?;
+    if let Some(consent) = consent {
+        state = state.with_consent(consent);
+    }
     axum::serve(listener, router(state.clone()))
         .with_graceful_shutdown(async move {
             shutdown.await;

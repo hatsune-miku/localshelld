@@ -26,13 +26,29 @@ Axum transport ── admin authentication ── Argon2id / RFC 6238
 
 同一二进制以两个身份独立运行：系统 daemon 使用原有 SCM/systemd/LaunchDaemon；`serve --user` 使用当前非高权限账户，安装为用户登录自启动项。用户 daemon 必须通过进程身份检查，拒绝 root/管理员，不能与 `--allow-unelevated` 合用。默认端口分别为 32119 和 32120，配置目录、Master/TOTP 和签发令牌相互独立。
 
-MCP 入口推荐用户 daemon，工具统一为 `localshelld_*`。`localshelld_run.sudo` 是必填 bool：false 路由至用户 shell；true 只允许持有高权限授权的会话转发给系统 daemon。系统 daemon 拒绝 false；用户态令牌不能用于 true。每种身份拥有独立的 shell 状态，不复制环境、变量或目录，也没有身份回退。
+MCP 入口推荐用户 daemon，工具统一为 `localshelld_*`。`localshelld_run.sudo` 是必填 bool：false 路由至用户 shell；true 只允许持有高权限授权的会话转发给系统 daemon。系统入口也支持 false，但必须先显式配对用户 daemon，再通过认证加密桥转发。用户态令牌不能用于 true。每种身份拥有独立的 shell 状态，不复制环境、变量或目录，也没有身份回退。
 
 用户态令牌独立验证，系统 daemon 不在线仍可运行普通命令。用户提交系统 daemon 的令牌时，用户 daemon 先向签发端 enter，再创建用户 shell、独立 handle 和内存映射，只保留上游 handle；不会读取或转交 Master Password/TOTP。控制请求限制 5 秒，长轮询限制 20 秒，禁止代理和重定向，目标限定为 loopback SocketAddr，响应读取有大小上限。命令转发不默认限时、不重试。
 
 上游的 validate/watch 接口验证 handle，不依赖执行锁；watch 至多挂起 15 秒，撤销或 shell 结束可提前唤醒。用户 daemon 在每次普通执行前验证上游会话，另持续 watch 授权生命周期，失联、撤销、到期或关闭时取消本地 shell。任何一端 shell 结束时整个双权限 handle 失效；用户主动销毁或关闭也请求销毁上游会话。此机制提供跨进程取消，不能保证机器/网络失效时即时收到通知；通信超时后失败关闭。
 
 用户 daemon 与用户共享操作系统账户，高权限 daemon 通过用户签发的系统令牌接受委托。两种 daemon 的职责是选择执行身份并管理会话生命周期。
+
+### 授权与显示分层
+
+- `auth`：Master/TOTP、运行期执行令牌；`management`：10 分钟管理会话、WebAuthn 和凭据设置。
+- `settings` / `storage`：原子、受 ACL 保护的配置写入，以及独立的 `config.authorization.json`。后者保存配对共享密钥、通行密钥公钥/元数据、用户 UUID 和记住的选择；备份或迁移时需同时保留它、原配置和 seal key。
+- `consent`：最多 8 个 pending 请求、60 秒截止时间、取消清理与进程内一次性决策回调；`server` 统一决定权限与创建会话。
+- `desktop`：平台适配。Windows 的 `crates/native-dialog` 封装 Win32 FFI；应用主库继续禁止 unsafe。模型无关的窗口层只接收文字和完成回调，不知道 token、shell 或提权接口。Linux/macOS 保留 Tao/Wry 实现。
+- `bridge`：显式配对后使用 AES-256-GCM 信封，绑定角色、方向、请求 ID，限制请求年龄并阻止重放。控制请求有短超时，授权请求遵循 60 秒截止时间，命令不默认限时、不重试。
+
+Windows 使用模型无关的原生无模式对话框，`IsDialogMessageW` 负责键盘导航，W 系列控件处理 Unicode。GUI 线程只处理窗口、布局和事件；有界 Rust 队列与 `PostMessageW` 传递唤醒，停止事件不受队列满影响。GUI 不读取配置、不阻塞等待 HTTP、不创建 shell。DPI 切换时替换字体并重排，关闭 HWND 后释放 GDI 资源。原生窗口不需要 WebView2；Windows 构建不引入 Wry/Tao。
+
+记忆接受不在工具结果中标记自动，且不谎称发生了本次点击；记忆拒绝明确标记自动。忽略和关闭是“不作决定”，由授权端等到原始截止时间。客户端断开或 UI 失败不产生授权。代理名称是自报信息，同名请求共享选择，不具备身份认证强度。
+
+配对用户 daemon 是系统授权信任边界的一部分：控制该普通用户进程或其账户的主体可能模拟批准。原生窗口不是 UAC 安全桌面，也不是防本机恶意软件的可信输入通道。这里提供用户可控的本机委托，不宣称能够抵御同账户失陷。
+
+未来内核能力应新增独立执行后端，复用授权结果与生命周期；不得把驱动逻辑塞进 UI、WebAuthn 或 bridge。签名和内核代码本次均未实现，决策依据见 [Windows 驱动签名调研](WINDOWS-DRIVER-SIGNING.md)。
 
 ## 关键取舍
 

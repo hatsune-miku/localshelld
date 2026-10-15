@@ -21,6 +21,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-build
       - name: Embed the matching release candidate version
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
@@ -50,8 +51,19 @@ jobs:
         shell: bash
         run: /bin/bash --version
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --all-targets
+      - name: Browser and WebAuthn integration tests
+        if: runner.os == 'Linux'
+        run: |
+          pnpm --dir web exec playwright install --with-deps chromium
+          pnpm --dir web test:e2e
+      - name: Browser test diagnostics
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-diagnostics
+          path: web/test-results/
       - run: cargo build --release
       - name: Verify real user and root daemon identities
         if: runner.os != 'Windows'

@@ -1,0 +1,45 @@
+.consent-view {
+  padding: 28px;
+  .consent-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .consent-time {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+  }
+  .consent-agent {
+    font-size: 18px;
+    margin: 12px 0 4px;
+    overflow-wrap: anywhere;
+  }
+  .consent-reason {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 180px;
+    overflow: auto;
+    padding: 18px;
+    margin: 0 0 22px;
+    background: var(--surface);
+    border-radius: 8px;
+  }
+  .consent-remember {
+    margin-top: 20px;
+    align-items: flex-start;
+  }
+  .consent-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 24px;
+  }
+  .consent-expired {
+    color: var(--muted);
+    margin-bottom: 0;
+  }
+}

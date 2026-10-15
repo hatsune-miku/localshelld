@@ -2,8 +2,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::Utc;
@@ -13,9 +13,12 @@ use tokio::sync::Mutex;
 
 use crate::{
     auth::{AuthError, AuthManager, Credential, DEFAULT_TOKEN_TTL_SECONDS, TokenRecord},
+    bridge::{self, ReplayGuard},
     config::Config,
+    consent::{CONSENT_TIMEOUT, Choice, ConsentBroker, Decision, Prompt, validate_request},
     mcp,
     peer::Peer,
+    settings::{Pairing, Settings},
     shell::{ExecutionResult, Shell, ShellError, ShellKind},
 };
 
@@ -24,8 +27,13 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub mode: DaemonMode,
     peer: Option<Peer>,
-    auth: Arc<Mutex<AuthManager>>,
+    pub(crate) auth: Arc<Mutex<AuthManager>>,
     sessions: Arc<Mutex<SessionStore>>,
+    pub(crate) settings: Arc<Mutex<Settings>>,
+    pub(crate) bridge_replay: ReplayGuard,
+    pub(crate) consent: Option<ConsentBroker>,
+    pub(crate) management: Arc<Mutex<crate::management::Management>>,
+    interactive_permits: Arc<tokio::sync::Semaphore>,
 }
 
 struct Session {
@@ -69,6 +77,17 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub(crate) fn with_status(status: u16, message: String) -> Self {
+        Self {
+            status: StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            message,
+        }
+    }
+
+    pub(crate) fn status_code(&self) -> u16 {
+        self.status.as_u16()
+    }
+
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -145,12 +164,161 @@ impl IntoResponse for ApiError {
 impl AppState {
     pub fn new(config: Config, auth: AuthManager) -> Self {
         Self {
+            settings: Arc::new(Mutex::new(Settings::memory(config.clone()))),
+            bridge_replay: ReplayGuard::default(),
+            consent: None,
+            management: Arc::new(Mutex::new(crate::management::Management::default())),
+            interactive_permits: Arc::new(tokio::sync::Semaphore::new(crate::consent::MAX_PENDING)),
             mode: DaemonMode::Privileged,
             peer: None,
             config: Arc::new(config),
             auth: Arc::new(Mutex::new(auth)),
             sessions: Arc::new(Mutex::new(SessionStore::default())),
         }
+    }
+
+    pub fn with_storage(mut self, path: std::path::PathBuf) -> anyhow::Result<Self> {
+        self.settings = Arc::new(Mutex::new(Settings::load(path, (*self.config).clone())?));
+        Ok(self)
+    }
+
+    pub fn with_consent(mut self, consent: ConsentBroker) -> Self {
+        self.consent = Some(consent);
+        self
+    }
+
+    pub(crate) async fn pairing(&self) -> Result<Pairing, ApiError> {
+        self.settings.lock().await.saved.pairing.clone().ok_or_else(|| ApiError::unavailable(
+            "desktop daemon is not paired; pair the user and privileged daemons in the management UI (or use the user daemon at port 32120 for sudo=false)"
+        ))
+    }
+
+    pub async fn enter_interactive(
+        &self,
+        agent_name: &str,
+        request_reason: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        use serde_json::json;
+        validate_request(agent_name, request_reason)?;
+        let _permit = self
+            .interactive_permits
+            .try_acquire()
+            .map_err(|_| ApiError::unavailable("too many pending authorization requests"))?;
+        let deadline = tokio::time::Instant::now() + CONSENT_TIMEOUT;
+        if self.mode == DaemonMode::User && self.settings.lock().await.saved.pairing.is_some() {
+            let pairing = self.pairing().await?;
+            let mut result: serde_json::Value = bridge::call(
+                &pairing,
+                DaemonMode::Privileged,
+                bridge::Request::EnterInteractive {
+                    agent_name: agent_name.into(),
+                    request_reason: request_reason.into(),
+                },
+                Some(CONSENT_TIMEOUT + Duration::from_secs(1)),
+                65_536,
+            )
+            .await?;
+            if result["status"] == "authorized" {
+                let handle = result["handle"]
+                    .as_str()
+                    .ok_or_else(|| ApiError::unavailable("missing authorized session handle"))?;
+                let attached = self.attach_remote(handle).await?;
+                let btw = result["btw"].clone();
+                result = serde_json::to_value(attached)
+                    .map_err(|_| ApiError::internal("session serialization failed"))?;
+                result["status"] = json!("authorized");
+                result["btw"] = btw;
+            }
+            return Ok(result);
+        }
+        let remembered = self
+            .settings
+            .lock()
+            .await
+            .saved
+            .remembered
+            .get(agent_name)
+            .copied();
+        if remembered == Some(false) {
+            return Ok(
+                json!({"status":"denied", "automatic":true, "message":"Automatically denied by the user's remembered choice.", "btw":""}),
+            );
+        }
+        let mut btw = String::new();
+        if remembered.is_none() {
+            let prompt = Prompt {
+                id: uuid::Uuid::new_v4().to_string(),
+                agent_name: agent_name.into(),
+                request_reason: request_reason.into(),
+                scope: if self.mode == DaemonMode::Privileged {
+                    "管理员 / root 及普通用户命令"
+                } else {
+                    "当前用户命令（不含管理员 / root）"
+                }
+                .into(),
+                expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+            };
+            let decision: Decision = if self.mode == DaemonMode::Privileged {
+                let pairing = self.pairing().await?;
+                match tokio::time::timeout(
+                    CONSENT_TIMEOUT,
+                    bridge::call(
+                        &pairing,
+                        DaemonMode::User,
+                        bridge::Request::Consent { prompt },
+                        Some(CONSENT_TIMEOUT + Duration::from_secs(1)),
+                        65_536,
+                    ),
+                )
+                .await
+                {
+                    Ok(result) => result?,
+                    Err(_) => Decision {
+                        choice: Choice::Ignore,
+                        remember: false,
+                        btw: String::new(),
+                    },
+                }
+            } else {
+                self.consent.as_ref().ok_or_else(|| ApiError::unavailable("interactive authorization requires the user daemon on a graphical desktop"))?.request(prompt).await?
+            };
+            btw = decision.btw;
+            if decision.choice == Choice::Ignore {
+                tokio::time::sleep_until(deadline).await;
+                return Ok(json!({"status":"timed_out", "timeout_ms":60_000, "btw":btw}));
+            }
+            if decision.remember {
+                let mut settings = self.settings.lock().await;
+                let mut next = settings.saved.clone();
+                next.remembered
+                    .insert(agent_name.to_owned(), decision.choice == Choice::Accept);
+                settings.save(next).await?;
+            }
+            if decision.choice == Choice::Deny {
+                return Ok(json!({"status":"denied", "automatic":false, "btw":btw}));
+            }
+        }
+        // Both fresh and remembered approvals have the same truthful result.
+        // No assertion is made that a person clicked for this particular call.
+        let token = self
+            .auth
+            .lock()
+            .await
+            .issue_token(Some(DEFAULT_TOKEN_TTL_SECONDS))?
+            .0;
+        let entered = match self.enter(&token).await {
+            Ok(entered) => entered,
+            Err(error) => {
+                let _ = self.revoke_token(&token).await;
+                return Err(error);
+            }
+        };
+        let mut result = serde_json::to_value(entered)
+            .map_err(|_| ApiError::internal("session serialization failed"))?;
+        result["status"] = json!("authorized");
+        result["message"] = json!("Session authorized. Use the handle for subsequent calls.");
+        result["btw"] = json!(btw);
+        Ok(result)
     }
 
     pub fn user(config: Config, auth: AuthManager) -> Result<Self, ApiError> {
@@ -230,6 +398,27 @@ impl AppState {
     async fn enter_remote(&self, token: &str) -> Result<EnterResult, ApiError> {
         let peer = self.peer.as_ref().expect("user daemon has a peer");
         let entered = peer.enter(token).await?;
+        self.register_remote(entered).await
+    }
+
+    pub(crate) async fn attach_remote(&self, handle: &str) -> Result<EnterResult, ApiError> {
+        let peer = self.peer.as_ref().ok_or_else(|| {
+            ApiError::forbidden("only the user daemon can attach a privileged session")
+        })?;
+        let expires_at = peer.inspect(handle).await?;
+        self.register_remote(crate::peer::Entered {
+            handle: handle.into(),
+            expires_at,
+            daemon: "privileged".into(),
+        })
+        .await
+    }
+
+    async fn register_remote(
+        &self,
+        entered: crate::peer::Entered,
+    ) -> Result<EnterResult, ApiError> {
+        let peer = self.peer.as_ref().expect("user daemon has a peer");
         let key = format!("privileged:{}", entered.handle);
         let mut sessions = self.sessions.lock().await;
         if sessions.shutting_down {
@@ -311,9 +500,43 @@ impl AppState {
             ));
         }
         if self.mode == DaemonMode::Privileged && !sudo {
-            return Err(ApiError::forbidden(
-                "sudo=false requires the user daemon; connect to its MCP endpoint",
-            ));
+            self.validate_session(handle, false).await?;
+            let pairing = self.pairing().await?;
+            let attached: serde_json::Value = bridge::call(
+                &pairing,
+                DaemonMode::User,
+                bridge::Request::Attach {
+                    handle: handle.into(),
+                },
+                Some(Duration::from_secs(5)),
+                65_536,
+            )
+            .await?;
+            let user_handle = attached["handle"]
+                .as_str()
+                .ok_or_else(|| ApiError::unavailable("missing user session handle"))?;
+            let result: Result<ExecutionResult, ApiError> = bridge::call(
+                &pairing,
+                DaemonMode::User,
+                bridge::Request::Run {
+                    handle: user_handle.into(),
+                    command: command.into(),
+                    timeout_seconds: requested_timeout,
+                },
+                None,
+                self.config
+                    .max_output_bytes
+                    .saturating_mul(8)
+                    .saturating_add(65_536),
+            )
+            .await;
+            if result.as_ref().map_or_else(
+                |error| error.status != StatusCode::BAD_REQUEST,
+                |result| result.session_ended,
+            ) {
+                let _ = self.destroy_session(handle).await;
+            }
+            return result;
         }
         let (shell, remote) = {
             let mut sessions = self.sessions.lock().await;
@@ -481,7 +704,7 @@ impl AppState {
         Ok(())
     }
 
-    async fn authenticate(&self, credential: &Credential) -> Result<(), ApiError> {
+    pub(crate) async fn authenticate(&self, credential: &Credential) -> Result<(), ApiError> {
         self.auth.lock().await.verify_credential(credential)?;
         Ok(())
     }
@@ -502,8 +725,10 @@ fn remove_session(store: &mut SessionStore, handle: &str) -> Option<Arc<Shell>> 
 
 #[cfg(test)]
 mod dual_daemon_tests;
+#[cfg(test)]
+mod interactive_tests;
 
-fn strong_handle() -> String {
+pub(crate) fn strong_handle() -> String {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
@@ -530,7 +755,7 @@ struct HandleBody {
 
 #[derive(Deserialize)]
 struct IssueBody {
-    credential: Credential,
+    credential: Option<Credential>,
     ttl_seconds: Option<u64>,
     #[serde(default)]
     permanent: bool,
@@ -545,19 +770,21 @@ struct IssueResponse {
 
 #[derive(Deserialize)]
 struct AdminListBody {
-    credential: Credential,
+    credential: Option<Credential>,
 }
 
 #[derive(Deserialize)]
 struct AdminRevokeBody {
-    credential: Credential,
+    credential: Option<Credential>,
     id: String,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/", get(index))
+        .merge(crate::management::routes())
+        .route("/", get(crate::assets::serve))
         .route("/health", get(health))
+        .route("/v1/bridge", post(bridge::handle))
         .route("/v1/sessions/enter", post(enter))
         .route("/v1/commands/run", post(run))
         .route("/v1/sessions/destroy", post(destroy))
@@ -568,17 +795,62 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/tokens/list", post(list_tokens))
         .route("/v1/admin/tokens/revoke", post(admin_revoke))
         .route("/mcp", post(mcp::handle))
+        .fallback(crate::assets::serve)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            browser_boundary,
+        ))
         .with_state(state)
 }
 
-async fn index(axum::extract::State(state): axum::extract::State<AppState>) -> Html<String> {
-    let text = include_str!("ui.html");
-    let scope = if state.mode == DaemonMode::User {
-        "当前用户权限（不含管理员/root）"
-    } else {
-        "管理员/root 权限"
-    };
-    Html(text.replace("{{AUTHORIZATION_SCOPE}}", scope))
+async fn browser_boundary(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<Response, ApiError> {
+    fn allowed_authority(value: &str, port: u16) -> bool {
+        let Ok(authority) = value.parse::<axum::http::uri::Authority>() else {
+            return false;
+        };
+        matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
+            && authority.port_u16() == Some(port)
+    }
+    if let Some(host) = request.headers().get("host")
+        && !host
+            .to_str()
+            .is_ok_and(|host| allowed_authority(host, state.config.bind.port()))
+    {
+        return Err(ApiError::forbidden(
+            "Host must be the daemon's loopback address and port",
+        ));
+    }
+    if let Some(origin) = request.headers().get("origin") {
+        let valid = origin
+            .to_str()
+            .ok()
+            .and_then(|origin| origin.parse::<axum::http::Uri>().ok())
+            .is_some_and(|uri| {
+                uri.scheme_str() == Some("http")
+                    && uri.authority().is_some_and(|authority| {
+                        allowed_authority(authority.as_str(), state.config.bind.port())
+                    })
+            });
+        if !valid {
+            return Err(ApiError::forbidden(
+                "cross-origin browser requests are not allowed",
+            ));
+        }
+    }
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        "cache-control",
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        "x-content-type-options",
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
 }
 
 async fn health(
@@ -612,7 +884,17 @@ async fn validate(
     Json(body): Json<HandleBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state.validate_session(&body.handle, false).await?;
-    Ok(Json(serde_json::json!({"valid": true})))
+    let expires_at = state
+        .sessions
+        .lock()
+        .await
+        .by_handle
+        .get(&body.handle)
+        .ok_or(AuthError::InvalidCredential)?
+        .expires_at;
+    Ok(Json(
+        serde_json::json!({"valid": true, "expires_at": expires_at}),
+    ))
 }
 
 async fn watch(
@@ -641,9 +923,10 @@ async fn revoke(
 
 async fn issue(
     axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<IssueBody>,
 ) -> Result<Json<IssueResponse>, ApiError> {
-    state.authenticate(&body.credential).await?;
+    crate::management::authorize(&state, &headers, body.credential.as_ref()).await?;
     let ttl = if body.permanent {
         None
     } else {
@@ -668,18 +951,20 @@ async fn issue(
 
 async fn list_tokens(
     axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<AdminListBody>,
 ) -> Result<Json<Vec<TokenRecord>>, ApiError> {
-    state.authenticate(&body.credential).await?;
+    crate::management::authorize(&state, &headers, body.credential.as_ref()).await?;
     let records = state.auth.lock().await.list();
     Ok(Json(records))
 }
 
 async fn admin_revoke(
     axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<AdminRevokeBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    state.authenticate(&body.credential).await?;
+    crate::management::authorize(&state, &headers, body.credential.as_ref()).await?;
     state.auth.lock().await.revoke(&body.id)?;
     state.destroy_sessions_for_token(&body.id).await;
     Ok(Json(serde_json::json!({ "revoked": true })))

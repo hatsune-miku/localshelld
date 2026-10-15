@@ -52,7 +52,7 @@ async fn actual_user_daemon_executes_as_current_user_without_root_backend() {
         let error = String::from_utf8_lossy(&initialized.stderr);
         assert!(error.contains("non-elevated"), "user init failed: {error}");
         let serve = cli()
-            .args(["serve", "--user", "--config"])
+            .args(["serve", "--user", "--headless", "--config"])
             .arg(&path)
             .output()
             .unwrap();
@@ -69,7 +69,7 @@ async fn actual_user_daemon_executes_as_current_user_without_root_backend() {
     drop(reservation);
     let mut daemon = Daemon(
         cli()
-            .args(["serve", "--user", "--config"])
+            .args(["serve", "--user", "--headless", "--config"])
             .arg(&path)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -102,7 +102,8 @@ async fn actual_user_daemon_executes_as_current_user_without_root_backend() {
         .text()
         .await
         .unwrap();
-    assert!(page.contains("当前用户权限（不含管理员/root）"));
+    assert!(page.contains("本机授权管理"));
+    assert!(page.contains("/assets/"));
     let issued: Value = client.post(format!("{base}/v1/admin/tokens/issue")).json(&json!({"credential":{"type":"password", "value":"localshelld integration test password"}}))
         .send().await.unwrap().json().await.unwrap();
     assert!(issued["warning"].as_str().unwrap().contains("sudo=false"));
