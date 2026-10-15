@@ -48,7 +48,7 @@ Agent 判断任务需要本机执行能力
 
 - Windows 10/11：安装 [PowerShell 7 (`pwsh`)](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
 - Linux：使用 `/bin/bash`，自动安装服务需要 systemd
-- macOS：使用系统 `/bin/bash`（兼容 Bash 3.2）和 launchd；支持 Apple Silicon 与 Intel
+- macOS：使用系统 `/bin/bash`（兼容 Bash 3.2）和 launchd；预编译发布包仅提供 Apple Silicon，Intel 不再纳入 CI 和发布流程
 - 从源码构建需要 Rust stable、Node.js 22 与 pnpm 10.14；先构建 Web 资源，再构建 Rust
 - Linux 图形授权需要登录桌面和 WebKitGTK 4.1 / GTK 3；Debian/Ubuntu 构建依赖为 `libwebkit2gtk-4.1-dev libgtk-3-dev libssl-dev pkg-config`
 - Windows 授权窗口使用 Win32 原生控件，不依赖 WebView2；编译 WebAuthn 所需的 OpenSSL 时需要 Perl/NASM
@@ -163,6 +163,8 @@ localshelld update --tag v0.1.0-rc.8.1      # 指定标签（示例）
 
 实际更新需要 Administrator/root，来源固定为 `hatsune-miku/localshelld` 的 GitHub Releases，不需要 GitHub 登录。`--check` 不下载二进制、不修改文件、不停止服务。稳定通道同时排除 prerelease 标记和带预发布后缀的标签，不会把历史上误标为正式版的 RC 当成稳定版；没有稳定版时使用 `--prerelease`。
 
+更新器自动读取 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`，以及 Windows/macOS 当前用户的系统代理设置；支持 `NO_PROXY` 排除项。`HTTPS_PROXY` / `HTTP_PROXY` 可显式覆盖对应协议的系统代理，不需要关闭 TLS 校验。Windows/macOS 的 PAC 脚本不属于本功能支持范围，必要时指定静态 HTTP 代理。临时排障可在当前 PowerShell 中设置 `$env:HTTPS_PROXY = 'http://127.0.0.1:<代理端口>'`，再运行 `localshelld update --check --prerelease`。本机 daemon 通信与更新后的健康检查始终绕过代理。
+
 更新前先完成下载、SHA-256 校验、平台匹配和二进制版本检查，再备份旧程序并更新。已安装的系统服务只在原本运行时停止和恢复；不会改写服务注册、配置、Master Password 或 `seal.key`。重启会中断会话并使全部运行期 token 失效。新版本服务状态与 `/health` 版本检查失败时，自动恢复旧二进制并尝试恢复原服务；回滚本身失败会保留备份并明确报错。
 
 更新器管理的是系统服务，不会跨用户会话控制用户 daemon。若两种 daemon 共用同一个二进制，更新前请在普通用户终端执行 `localshelld uninstall --user`，更新后再执行 `localshelld install --user`。Windows 上仍运行的用户 daemon 可能占用二进制；Unix 上未重启的进程仍运行旧版本。
@@ -256,7 +258,7 @@ pnpm --dir web exec playwright install chromium
 pnpm --dir web test:e2e
 ```
 
-集成测试调用本平台 shell，验证管道、通配符、多行、Unicode、错误流、退出码、状态继承、截断后同步、可选超时、无限时命令取消，以及 HTTP 签发/复用/执行/撤销生命周期。所需 shell 缺失会让测试失败。CI 覆盖 Windows x86_64、Linux x86_64、macOS Apple Silicon 和 Intel，macOS 使用系统 Bash 3.2。
+集成测试调用本平台 shell，验证管道、通配符、多行、Unicode、错误流、退出码、状态继承、截断后同步、可选超时、无限时命令取消，以及 HTTP 签发/复用/执行/撤销生命周期。所需 shell 缺失会让测试失败。CI 覆盖 Windows x86_64、Linux x86_64、macOS Apple Silicon，macOS 使用系统 Bash 3.2。
 
 双 daemon 测试使用真实 loopback HTTP 验证路由、独立状态、令牌权限、到期、撤销和关闭级联。Linux/macOS CI 另用 `scripts/test-dual-daemon.py` 启动不同 UID 的真实进程，检查两种 `sudo` 模式的 `id -u` 输出；它不安装系统服务。
 

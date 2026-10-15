@@ -85,6 +85,9 @@ fn select_release(releases: Vec<Release>, prerelease: bool) -> Result<Release> {
 }
 
 fn client() -> Result<Client> {
+    // Keep reqwest's automatic proxy discovery: HTTPS_PROXY / ALL_PROXY and,
+    // with the system-proxy feature, the current user's Windows/macOS settings.
+    // Loopback daemon clients explicitly opt out with no_proxy().
     Ok(Client::builder()
         .user_agent(concat!("localshelld/", env!("LOCALSHELLD_VERSION")))
         .https_only(true)

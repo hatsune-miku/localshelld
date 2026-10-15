@@ -1,6 +1,22 @@
 use super::*;
 use std::{cell::RefCell, io::Write};
 
+#[test]
+fn updater_keeps_system_proxy_support_with_default_features_disabled() {
+    // reqwest's environment-variable discovery remains available even when OS
+    // proxy discovery is accidentally disabled, so env-proxy tests alone would
+    // not catch this regression. Guard the application's feature contract too.
+    let manifest: toml::Value = toml::from_str(include_str!("../../Cargo.toml")).unwrap();
+    let features = manifest["dependencies"]["reqwest"]["features"]
+        .as_array()
+        .unwrap();
+    assert!(
+        features
+            .iter()
+            .any(|feature| feature.as_str() == Some("system-proxy"))
+    );
+}
+
 fn release(tag: &str, prerelease: bool, draft: bool) -> Release {
     Release {
         tag_name: tag.into(),

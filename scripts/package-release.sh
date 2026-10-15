@@ -4,7 +4,7 @@
 set -euo pipefail
 : "${LOCALSHELLD_RELEASE_TAG:?expected release tag is required}"
 mkdir -p assets packages
-for platform in windows-x86_64 linux-x86_64 macos-aarch64 macos-x86_64; do
+for platform in windows-x86_64 linux-x86_64 macos-aarch64; do
   binary=localshelld
   if [[ "$platform" == windows-* ]]; then binary=localshelld.exe; fi
   source="binaries/localshelld-$platform/$binary"
