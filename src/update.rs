@@ -430,7 +430,8 @@ fn lock(target: &Path) -> Result<File> {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(path)?;
+        .open(&path)
+        .with_context(|| format!("cannot open update lock {}", path.display()))?;
     file.try_lock_exclusive()
         .context("another update is in progress")?;
     Ok(file)
@@ -439,7 +440,7 @@ fn lock(target: &Path) -> Result<File> {
 pub fn run(options: Options) -> Result<()> {
     ensure!(
         options.check || std::env::var_os("LOCALSHELLD_SESSION").is_none(),
-        "updates run from an independent Administrator/root terminal; --check is also available inside a localshelld session"
+        "updates run from an independent terminal; --check is also available inside a localshelld session"
     );
     let client = client()?;
     let release = find_release(&client, &options)?;
@@ -469,18 +470,14 @@ pub fn run(options: Options) -> Result<()> {
         println!("Update available; no files or services were changed.");
         return Ok(());
     }
-    ensure!(
-        super::is_elevated()?,
-        "updating requires Administrator/root; --check does not"
-    );
     let target = std::env::current_exe()?.canonicalize()?;
     service::validate_target(&target)?;
     let _lock = lock(&target)?;
     let installed = service::discover(&target)?;
     let temp = tempfile::Builder::new()
         .prefix(".localshelld-update-")
-        .tempdir_in(target.parent().unwrap())?;
-    service::protect_staging(temp.path())?;
+        .tempdir_in(target.parent().unwrap())
+        .with_context(|| format!("cannot stage an update beside {}", target.display()))?;
     let archive = temp.path().join("download");
     let new = temp
         .path()
@@ -697,10 +694,6 @@ fn launch_helper(temp: tempfile::TempDir, plan: Plan, update_lock: File) -> Resu
 
 #[cfg(windows)]
 pub fn apply_helper(plan_path: &Path) -> Result<()> {
-    ensure!(
-        super::is_elevated()?,
-        "update helper requires Administrator"
-    );
     let executable = std::env::current_exe()?.canonicalize()?;
     let stage = executable.parent().context("missing helper directory")?;
     ensure!(

@@ -1,8 +1,8 @@
 #[cfg(unix)]
-use std::fs;
+use std::process::Command;
 use std::{
+    fs,
     path::Path,
-    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -10,9 +10,11 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use super::Lifecycle;
+#[cfg(unix)]
+use super::checked;
 #[cfg(target_os = "macos")]
 use super::output;
-use super::{Lifecycle, checked};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Installed {
@@ -88,146 +90,16 @@ impl Lifecycle for Installed {
     }
 }
 
-/// Only update binaries in administrator-controlled directories. Otherwise an
-/// unprivileged writer could swap the verified image or helper before execution.
+/// Validate the resolved file, not who owns it or where the user installed it.
+/// Filesystem and service operations report any permissions required by the OS.
 pub(super) fn validate_target(target: &Path) -> Result<()> {
     ensure!(
-        target.is_absolute() && target.is_file(),
-        "update target must be an absolute regular file"
+        target.is_absolute(),
+        "update target must be an absolute path"
     );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        for path in target.ancestors() {
-            let metadata = fs::symlink_metadata(path)?;
-            ensure!(
-                !metadata.file_type().is_symlink()
-                    && metadata.uid() == 0
-                    && metadata.mode() & 0o022 == 0,
-                "{} is not root-owned/protected; install in a root-owned path (not a user-writable checkout) before updating",
-                path.display()
-            );
-            #[cfg(target_os = "macos")]
-            {
-                // macOS extended ACLs can grant writes not reflected in mode bits.
-                let acl = checked(Command::new("/bin/ls").arg("-lde").arg(path))?;
-                let extra_write = acl.lines().skip(1).any(|line| {
-                    line.contains(" allow ")
-                        && line.split([' ', ',']).any(|right| {
-                            matches!(
-                                right,
-                                "write"
-                                    | "append"
-                                    | "delete"
-                                    | "delete_child"
-                                    | "add_file"
-                                    | "add_subdirectory"
-                                    | "writeattr"
-                                    | "writeextattr"
-                                    | "writesecurity"
-                                    | "chown"
-                            )
-                        })
-                });
-                ensure!(
-                    !extra_write,
-                    "writable extended ACL on {}; update manually",
-                    path.display()
-                );
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        // Fixed script; paths are data in the environment, never interpolated code.
-        const SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-$p = $env:LOCALSHELLD_UPDATE_TARGET
-$depth = 0
-$trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-while ($p) {
-  $attributes = [IO.File]::GetAttributes($p)
-  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Reparse point not allowed: $p" }
-  $acl = if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
-    [IO.Directory]::GetAccessControl($p)
-  } else { [IO.File]::GetAccessControl($p) }
-  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-  if ($trusted -notcontains $owner) { throw "Install in an administrator-owned directory first: $p" }
-  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-    $mask = if ($depth -le 1) { 0x000D0156 } else { 0x000D0040 }
-    if ($rule.AccessControlType -eq 'Allow' -and $trusted -notcontains $rule.IdentityReference.Value -and
-        ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0 -and
-        ([int]$rule.FileSystemRights -band $mask) -ne 0) {
-      throw "Non-administrator write access on $p; use a protected installation directory"
-    }
-  }
-  $p = [IO.Path]::GetDirectoryName($p)
-  $depth++
-}
-"#;
-        powershell(SCRIPT, target)?;
-    }
-    Ok(())
-}
-
-pub(super) fn protect_staging(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
-    #[cfg(windows)]
-    {
-        // Remove inherited write access and set a trusted owner before placing
-        // executable content in this freshly created directory.
-        powershell(
-            r#"
-$ErrorActionPreference = 'Stop'
-$acl = [Security.AccessControl.DirectorySecurity]::new()
-$acl.SetAccessRuleProtection($true, $false)
-$admins = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-$acl.SetOwner($admins)
-foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
-  $id = [Security.Principal.SecurityIdentifier]::new($sid)
-  $rule = [Security.AccessControl.FileSystemAccessRule]::new($id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-  $acl.AddAccessRule($rule)
-}
-[IO.Directory]::SetAccessControl($env:LOCALSHELLD_UPDATE_TARGET, $acl)
-"#,
-            path,
-        )?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn powershell(script: &str, path: &Path) -> Result<()> {
-    use base64::Engine;
-    let script = format!(
-        "$PSModuleAutoLoadingPreference = 'None'; [Console]::OutputEncoding = [Text.Encoding]::UTF8;\n{script}"
-    );
-    let bytes: Vec<_> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let root = std::env::var_os("SystemRoot").context("missing SystemRoot")?;
-    let executable = Path::new(&root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let path = path.to_str().context("non-Unicode installation path")?;
-    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
-    ensure!(
-        !path.starts_with(r"UNC\") && !path.starts_with(r"\\"),
-        "network installations require manual updating"
-    );
-    checked(
-        Command::new(executable)
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-OutputFormat",
-                "Text",
-                "-EncodedCommand",
-                &encoded,
-            ])
-            .env("LOCALSHELLD_UPDATE_TARGET", path),
-    )?;
+    let metadata = fs::metadata(target)
+        .with_context(|| format!("cannot inspect update target {}", target.display()))?;
+    ensure!(metadata.is_file(), "update target must be a regular file");
     Ok(())
 }
 

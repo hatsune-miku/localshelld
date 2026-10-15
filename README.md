@@ -76,7 +76,7 @@ cargo build --release
 ./target/release/localshelld install
 ```
 
-Windows 注册为 `localshelld` 自启动服务并以 LocalSystem 运行；Linux 写入并启用 `localshelld.service`；macOS 写入 `/Library/LaunchDaemons/dev.localshelld.plist`，通过 launchd 以 root 自动运行。若初始化和安装使用不同账户，请在两条命令中都传入同一个绝对配置路径：`--config <path>`。二进制应放在稳定路径中，安装后不要移动它。
+Windows 注册为 `localshelld` 自启动服务并以 LocalSystem 运行；Linux 写入并启用 `localshelld.service`；macOS 写入 `/Library/LaunchDaemons/dev.localshelld.plist`，通过 launchd 以 root 自动运行。服务直接注册当前二进制所在的路径，不搬迁程序，也不要求指定安装目录或目录所有者；实际访问权限由操作系统决定。若初始化和安装使用不同账户，请在两条命令中都传入同一个绝对配置路径：`--config <path>`。二进制应放在稳定路径中，安装后不要移动它。
 
 安装器同时注册当前用户的登录自启动项，并立即启动用户 daemon（默认 `32120`）。若用户配置不存在，安装阶段就提示设置其独立 Master Password；也可以提前用 `init --user --totp` 初始化。已有用户配置、验证方式、配对密钥和记忆不会被覆盖，不会从系统端复制凭据，也不会自动建立互信。使用非默认用户配置时传入 `--user-config <path>`；已有配置的 `privileged_daemon` 必须指向这次安装的系统端。
 
@@ -165,7 +165,7 @@ localshelld update --tag v0.1.0-rc.8.1      # 指定标签（示例）
 # 确认需要降级时，同时指定 --tag 和 --allow-downgrade
 ```
 
-实际更新需要 Administrator/root，来源固定为 `hatsune-miku/localshelld` 的 GitHub Releases，不需要 GitHub 登录。`--check` 不下载二进制、不修改文件、不停止服务。稳定通道同时排除 prerelease 标记和带预发布后缀的标签，不会把历史上误标为正式版的 RC 当成稳定版；没有稳定版时使用 `--prerelease`。
+更新来源固定为 `hatsune-miku/localshelld` 的 GitHub Releases，不需要 GitHub 登录。更新器不预设 Administrator/root 门槛；写入程序目录或控制已安装的系统服务需要额外权限时，由操作系统报错，再在 Administrator/root 终端重试。`--check` 不下载二进制、不修改文件、不停止服务。稳定通道同时排除 prerelease 标记和带预发布后缀的标签，不会把历史上误标为正式版的 RC 当成稳定版；没有稳定版时使用 `--prerelease`。
 
 更新器自动读取 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`，以及 Windows/macOS 当前用户的系统代理设置；支持 `NO_PROXY` 排除项。`HTTPS_PROXY` / `HTTP_PROXY` 可显式覆盖对应协议的系统代理，不需要关闭 TLS 校验。Windows/macOS 的 PAC 脚本不属于本功能支持范围，必要时指定静态 HTTP 代理。临时排障可在当前 PowerShell 中设置 `$env:HTTPS_PROXY = 'http://127.0.0.1:<代理端口>'`，再运行 `localshelld update --check --prerelease`。本机 daemon 通信与更新后的健康检查始终绕过代理。
 
@@ -176,8 +176,8 @@ localshelld update --tag v0.1.0-rc.8.1      # 指定标签（示例）
 - Linux/macOS：在安装目录所在文件系统暂存完整文件，然后用 `rename` 原子替换路径，并同步目录。已运行进程继续使用旧文件，重启后使用新文件；这不是进程热升级，也不保证突然断电时整套服务操作具有事务性。
 - Windows：把替换交给隐藏的本地助手，等待原 CLI 退出后操作。命令输出助手日志路径；只有日志中的 `SUCCESS` 才表示完成，启动助手本身不代表更新成功。更新失败详情也写在该日志中。
 - 每次更新的 `.localshelld-update-*` 恢复目录保留 `previous` 旧二进制；Windows 还保留助手和日志。确认新版本稳定后，可在没有更新进行时手动清理对应目录。不会自动覆盖已有备份。
-- 二进制及上级目录必须由 root/Administrators/SYSTEM 等受信主体控制，不能位于普通用户可写的源码目录、下载目录或 Homebrew 用户目录。Windows 建议放在权限受保护的 `C:\Program Files\localshelld`；Unix 可使用 root 拥有且不可被普通用户写入的 `/opt/localshelld`。更新器不会自动放宽 ACL、修改所有者或移动已安装服务。
-- 自更新在独立管理员终端中运行。`LOCALSHELLD_SESSION` 标记用于识别 daemon 创建的会话，该环境中支持 `--check`，实际更新在会话之外执行。手工 `serve` 前台实例需要自行停止/重启；自定义 systemd drop-in、非标准服务命令或处于过渡状态的服务采用手动更新。
+- 更新直接替换当前二进制，不因目录位置、所有者或普通用户可写而拒绝；也不自动修改安装目录的 ACL、所有者或服务注册路径。目录是否可信由设备所有者决定。空间不足、实际访问被拒绝、文件被占用等情况按操作系统的结果报错，仍保留校验、并发锁、备份与失败回滚。
+- 自更新在独立终端中运行。`LOCALSHELLD_SESSION` 标记用于识别 daemon 创建的会话，该环境中支持 `--check`，实际更新在会话之外执行。手工 `serve` 前台实例需要自行停止/重启；自定义 systemd drop-in、非标准服务命令或处于过渡状态的服务采用手动更新。
 
 正式版和 RC 统一提供 Windows ZIP、Linux/macOS tar.gz 与 `SHA256SUMS`。CI 把完整 Release tag 和 commit 写入二进制，`--version`、MCP 初始化和 `/health` 使用同一版本；本地构建默认显示 `<Cargo版本>-dev`。早期 RC 没有嵌入完整标签，版本检查会拒绝安装它们；首次使用自更新需要先手动安装包含本功能的新 Release。
 

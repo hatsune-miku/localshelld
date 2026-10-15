@@ -278,7 +278,7 @@ fn missing_staged_binary_leaves_original_and_recovers_service() {
 
 #[cfg(windows)]
 #[test]
-fn windows_acl_check_accepts_protected_system_binary_read_only() {
+fn accepts_system_binary_without_changing_it() {
     let root = std::env::var_os("SystemRoot").unwrap();
     let binary = Path::new(&root)
         .join("System32/cmd.exe")
@@ -287,9 +287,71 @@ fn windows_acl_check_accepts_protected_system_binary_read_only() {
     service::validate_target(&binary).unwrap();
 }
 
+#[test]
+fn updates_in_user_writable_directory_without_changing_directory_permissions() {
+    let (temp, target, stage) = fixture();
+    let permissions = fs::metadata(temp.path()).unwrap().permissions();
+    service::validate_target(&target.canonicalize().unwrap()).unwrap();
+    service::validate_target(
+        &stage
+            .join(if cfg!(windows) { "new.exe" } else { "new" })
+            .canonicalize()
+            .unwrap(),
+    )
+    .unwrap();
+    transaction(&target, &stage, None, "1.0.0").unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"new binary");
+    assert_eq!(fs::read(stage.join("previous")).unwrap(), b"old binary");
+    assert_eq!(
+        fs::metadata(temp.path()).unwrap().permissions(),
+        permissions
+    );
+}
+
+#[test]
+fn update_target_requires_existing_absolute_regular_file() {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(service::validate_target(Path::new("relative.exe")).is_err());
+    assert!(service::validate_target(temp.path()).is_err());
+    let error = service::validate_target(&temp.path().join("missing.exe")).unwrap_err();
+    assert!(error.to_string().contains("cannot inspect update target"));
+    assert!(error.downcast_ref::<io::Error>().is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn writable_unix_modes_are_not_an_update_policy() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let (temp, target, _stage) = fixture();
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o777)).unwrap();
+    let before = fs::metadata(&target).unwrap();
+    service::validate_target(&target.canonicalize().unwrap()).unwrap();
+    let after = fs::metadata(&target).unwrap();
+    assert_eq!(before.uid(), after.uid());
+    assert_eq!(before.gid(), after.gid());
+    assert_eq!(before.mode(), after.mode());
+    assert_eq!(fs::metadata(temp.path()).unwrap().mode() & 0o777, 0o777);
+}
+
 #[cfg(windows)]
 #[test]
-fn windows_acl_check_rejects_user_writable_installation() {
-    let (_temp, target, _stage) = fixture();
-    assert!(service::validate_target(&target.canonicalize().unwrap()).is_err());
+fn windows_os_file_lock_preserves_original_binary_and_reports_failure() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (_temp, target, stage) = fixture();
+    // Permit reading the backup, but let Windows reject rename/delete while open.
+    let _held = OpenOptions::new()
+        .read(true)
+        .share_mode(0x1 | 0x2)
+        .open(&target)
+        .unwrap();
+    let service = MockService {
+        calls: RefCell::default(),
+        fail_new: false,
+        fail_stop: false,
+    };
+    let error = transaction(&target, &stage, Some(&service), "1.0.0").unwrap_err();
+    assert!(error.to_string().contains("original binary was preserved"));
+    assert_eq!(fs::read(&target).unwrap(), b"old binary");
+    assert_eq!(*service.calls.borrow(), ["stop", "start:None"]);
 }
