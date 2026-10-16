@@ -38,6 +38,7 @@ const WINDOW_STYLE: u32 = WS_CAPTION
     | WS_CLIPCHILDREN
     | DS_MODALFRAME as u32
     | DS_CENTER as u32;
+const WINDOW_EX_STYLE: u32 = WS_EX_APPWINDOW | WS_EX_TOPMOST;
 const SS_NOPREFIX_STYLE: u32 = 0x80;
 const HEADER: i32 = 101;
 const COUNTDOWN: i32 = 102;
@@ -266,8 +267,8 @@ impl Template {
         Self([
             WINDOW_STYLE as u16,
             (WINDOW_STYLE >> 16) as u16,
-            WS_EX_APPWINDOW as u16,
-            (WS_EX_APPWINDOW >> 16) as u16,
+            WINDOW_EX_STYLE as u16,
+            (WINDOW_EX_STYLE >> 16) as u16,
             0,
             0,
             0,
@@ -338,8 +339,21 @@ impl Window {
     }
 
     fn show(&self) {
+        // SAFETY: this window belongs to the current UI thread. The first
+        // ShowWindow call can honor a launcher's hidden/minimized STARTUPINFO
+        // instead of SW_SHOWNORMAL, so explicitly restore before presenting it.
         unsafe {
             ShowWindow(self.hwnd, SW_SHOWNORMAL);
+            ShowWindow(self.hwnd, SW_RESTORE);
+            SetWindowPos(
+                self.hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
             // Windows may decline foreground activation; do not bypass its rules.
             SetForegroundWindow(self.hwnd);
             SetFocus(GetDlgItem(self.hwnd, IDCANCEL));
@@ -623,7 +637,7 @@ fn outer_size(width: i32, height: i32, dpi: u32) -> (i32, i32) {
     };
     // SAFETY: writable RECT; styles match the dialog created above.
     unsafe {
-        AdjustWindowRectExForDpi(&mut rect, WINDOW_STYLE, 0, WS_EX_APPWINDOW, dpi);
+        AdjustWindowRectExForDpi(&mut rect, WINDOW_STYLE, 0, WINDOW_EX_STYLE, dpi);
     }
     (rect.right - rect.left, rect.bottom - rect.top)
 }
@@ -882,6 +896,62 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn consent_is_topmost_and_restored_even_after_hidden_startup() {
+        const MODE: &str = "LOCALSHELLD_DIALOG_SHOW_TEST";
+        if std::env::var_os(MODE).is_none() {
+            use std::{os::windows::process::CommandExt, process::Command};
+            let directory = tempfile::tempdir().unwrap();
+            let stdout = directory.path().join("stdout.log");
+            let stderr = directory.path().join("stderr.log");
+            let powershell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+            let output = Command::new(powershell)
+                .env_remove("PSModulePath")
+                .args(["-NoProfile", "-NonInteractive", "-Command", r#"
+$ErrorActionPreference='Stop'
+$child=Start-Process -FilePath $env:LOCALSHELLD_SHOW_TEST_EXE -ArgumentList @('--exact','windows::tests::consent_is_topmost_and_restored_even_after_hidden_startup','--nocapture') -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $env:LOCALSHELLD_SHOW_TEST_STDOUT -RedirectStandardError $env:LOCALSHELLD_SHOW_TEST_STDERR
+exit $child.ExitCode
+"#])
+                .env(MODE, "child")
+                .env("LOCALSHELLD_SHOW_TEST_EXE", std::env::current_exe().unwrap())
+                .env("LOCALSHELLD_SHOW_TEST_STDOUT", &stdout)
+                .env("LOCALSHELLD_SHOW_TEST_STDERR", &stderr)
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            let text = std::fs::read_to_string(stdout).unwrap_or_default();
+            let errors = std::fs::read_to_string(stderr).unwrap_or_default();
+            assert!(output.status.success(), "{output:?}\n{text}\n{errors}");
+            assert!(text.contains("topmost and restored"), "{text}");
+            return;
+        }
+        let (window, outcome) = fixture(Instant::now() + Duration::from_secs(60));
+        for minimize in [false, true] {
+            if minimize {
+                unsafe {
+                    ShowWindow(window.hwnd, SW_MINIMIZE);
+                    assert_ne!(IsIconic(window.hwnd), 0);
+                }
+            }
+            window.show();
+            unsafe {
+                assert_ne!(IsWindowVisible(window.hwnd), 0);
+                assert_eq!(IsIconic(window.hwnd), 0);
+                assert_ne!(
+                    GetWindowLongPtrW(window.hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST,
+                    0
+                );
+                assert_eq!(
+                    SendMessageW(window.hwnd, DM_GETDEFID, 0, 0) & 0xffff,
+                    IDCANCEL as isize
+                );
+            }
+            assert!(matches!(outcome.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        }
+        println!("topmost and restored");
     }
 
     #[test]

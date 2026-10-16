@@ -10,6 +10,7 @@ pub(crate) mod management;
 pub mod mcp;
 mod mcp_text;
 mod peer;
+pub mod process;
 pub mod server;
 pub(crate) mod settings;
 pub mod shell;

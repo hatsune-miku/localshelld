@@ -194,7 +194,7 @@ impl Process {
         executable: &str,
         max_output_bytes: usize,
     ) -> Result<Self, ShellError> {
-        let mut command = Command::new(executable);
+        let mut command = Command::from(crate::process::background_command(executable));
         match kind {
             ShellKind::PowerShell => {
                 let bytes: Vec<u8> = include_str!("shell/powershell.ps1")

@@ -207,8 +207,8 @@ pub(crate) fn set_private_dir(path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 fn restrict_windows_acl(path: &Path, directory: bool) -> Result<()> {
-    use std::process::Command;
-    let output = Command::new("whoami")
+    use crate::process::background_command;
+    let output = background_command("whoami")
         .output()
         .context("failed to determine the current Windows principal")?;
     if !output.status.success() {
@@ -219,7 +219,7 @@ fn restrict_windows_acl(path: &Path, directory: bool) -> Result<()> {
     let system = format!("*S-1-5-18:{inheritance}");
     let administrators = format!("*S-1-5-32-544:{inheritance}");
     let current_user = format!("{principal}:{inheritance}");
-    let status = Command::new("icacls")
+    let status = background_command("icacls")
         .arg(path)
         .args(["/inheritance:r", "/grant:r"])
         .args([system, administrators, current_user])

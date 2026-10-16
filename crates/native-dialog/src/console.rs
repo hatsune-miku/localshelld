@@ -130,6 +130,7 @@ mod tests {
         // Start with a hidden, dedicated console like Task Scheduler. The
         // launcher is also hidden, so this regression test does not flash a UI.
         let output = Command::new(powershell)
+            .env_remove("PSModulePath")
             .args(["-NoProfile", "-NonInteractive", "-Command", r#"
 $ErrorActionPreference='Stop'
 $child=Start-Process -FilePath $env:LOCALSHELLD_CONSOLE_TEST_EXE -ArgumentList @('--exact','console::tests::console_probe','--nocapture') -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $env:LOCALSHELLD_CONSOLE_TEST_STDOUT -RedirectStandardError $env:LOCALSHELLD_CONSOLE_TEST_STDERR

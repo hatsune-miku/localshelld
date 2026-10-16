@@ -473,7 +473,7 @@ fn require_user() -> Result<()> {
 #[cfg(windows)]
 fn windows_command(relative: &str) -> Result<Command> {
     let root = std::env::var_os("SystemRoot").context("missing SystemRoot")?;
-    Ok(Command::new(
+    Ok(localshelld::process::background_command(
         PathBuf::from(root).join("System32").join(relative),
     ))
 }
@@ -560,7 +560,7 @@ fn install_windows_service(executable: &Path, config: &Path) -> Result<()> {
         executable.display(),
         config.display()
     );
-    checked(Command::new("sc.exe").args([
+    checked(windows_command("sc.exe")?.args([
         "create",
         "localshelld",
         "binPath=",
@@ -570,12 +570,12 @@ fn install_windows_service(executable: &Path, config: &Path) -> Result<()> {
         "DisplayName=",
         "localshelld",
     ]))?;
-    checked(Command::new("sc.exe").args([
+    checked(windows_command("sc.exe")?.args([
         "description",
         "localshelld",
         "User-controlled privileged PowerShell broker",
     ]))?;
-    checked(Command::new("sc.exe").args([
+    checked(windows_command("sc.exe")?.args([
         "failure",
         "localshelld",
         "reset=",
@@ -583,7 +583,7 @@ fn install_windows_service(executable: &Path, config: &Path) -> Result<()> {
         "actions=",
         "restart/5000/restart/15000/\"\"/0",
     ]))?;
-    checked(Command::new("sc.exe").args(["start", "localshelld"]))
+    checked(windows_command("sc.exe")?.args(["start", "localshelld"]))
 }
 
 #[cfg(windows)]
