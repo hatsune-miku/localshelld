@@ -1,5 +1,5 @@
 name: Release Candidate
-run-name: Release candidate from CI #${{ github.event.workflow_run.run_number }}
+run-name: "Release candidate from CI #${{ github.event.workflow_run.run_number }}"
 
 on:
   workflow_run:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   create-candidate:
-    name: Package CI artifacts and create prerelease
+    name: Package CI artifacts and publish latest release
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
@@ -57,7 +57,7 @@ jobs:
           LOCALSHELLD_RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: bash scripts/package-release.sh
 
-      - name: Create GitHub prerelease
+      - name: Create GitHub Latest release
         env:
           GH_TOKEN: ${{ github.token }}
           RC_TAG: ${{ steps.version.outputs.tag }}
@@ -69,4 +69,5 @@ jobs:
             --target "$TARGET_SHA" \
             --title "localshelld $RC_TAG" \
             --generate-notes \
-            --prerelease
+            --prerelease=false \
+            --latest

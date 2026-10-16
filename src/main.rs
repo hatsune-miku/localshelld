@@ -112,13 +112,18 @@ enum CommandKind {
 }
 
 fn main() -> Result<()> {
+    let command = Cli::parse().command;
+    #[cfg(windows)]
+    if matches!(&command, CommandKind::Serve { user: true, .. }) {
+        localshelld_native_dialog::detach_owned_console()
+            .context("failed to detach the user daemon's standalone console")?;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "localshelld=info".into()),
         )
         .init();
-    let command = Cli::parse().command;
     let runtime = tokio::runtime::Runtime::new()?;
     if let CommandKind::Serve {
         user: true,

@@ -58,7 +58,7 @@ pub fn setup_user(path: Option<PathBuf>, system: Option<SocketAddr>, start: bool
     let path = path.map_or_else(user_config_path, Ok)?;
     let config = prepare_user_config(&path, system, |path| {
         println!(
-            "Initialize the current user's independent management credentials: {}",
+            "User daemon configuration is missing. Create its separate Master Password; the existing system daemon password is NOT being reset.\nUser configuration: {}",
             path.display()
         );
         super::initialize_config(path.into(), false, false, false, true, system)

@@ -89,7 +89,8 @@ fn select_release(releases: Vec<Release>, prerelease: bool) -> Result<Release> {
         .into_iter()
         .filter_map(|release| {
             let parsed = version(&release.tag_name).ok()?;
-            // Some historical RC tags were incorrectly marked as full releases.
+            // GitHub Latest is a display policy; an RC tag is still prerelease
+            // by semantic version, even when promoted to a full GitHub release.
             (!release.draft && (prerelease || (!release.prerelease && parsed.pre.is_empty())))
                 .then_some((parsed, release))
         })

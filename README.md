@@ -116,7 +116,7 @@ localshelld install --user
 # localshelld uninstall --user
 ```
 
-用户态配置使用独立的 `localshelld-user` 平台配置目录，默认监听 `127.0.0.1:32120`；所有命令仍可传 `--config`。Linux 安装为 `systemctl --user` 的 `localshelld-user.service`；macOS 安装为当前 GUI 登录会话的 `dev.localshelld.user` LaunchAgent；Windows 安装为当前用户 SID 对应的登录计划任务，使用交互用户令牌和最低权限。它随用户登录启动，不自动启用 Linux linger。多用户同时运行时需为各自的用户 daemon 配置不同端口。
+用户态配置使用独立的 `localshelld-user` 平台配置目录，默认监听 `127.0.0.1:32120`；所有命令仍可传 `--config`。Linux 安装为 `systemctl --user` 的 `localshelld-user.service`；macOS 安装为当前 GUI 登录会话的 `dev.localshelld.user` LaunchAgent；Windows 安装为当前用户 SID 对应的登录计划任务，使用交互用户令牌和最低权限。Windows 用户 daemon 启动后会释放只属于自己的控制台，不留下命令行窗口；从现有终端手动运行时保留共享终端和输出，原生授权弹窗不受影响。它随用户登录启动，不自动启用 Linux linger。多用户同时运行时需为各自的用户 daemon 配置不同端口。
 
 Agent 连接 `http://127.0.0.1:32120/mcp`：
 
@@ -165,7 +165,7 @@ localshelld update --tag v0.1.0-rc.8.1      # 指定标签（示例）
 # 确认需要降级时，同时指定 --tag 和 --allow-downgrade
 ```
 
-更新来源固定为 `hatsune-miku/localshelld` 的 GitHub Releases，不需要 GitHub 登录。更新器不预设 Administrator/root 门槛；写入程序目录或控制已安装的系统服务需要额外权限时，由操作系统报错，再在 Administrator/root 终端重试。`--check` 不下载二进制、不修改文件、不停止服务。稳定通道同时排除 prerelease 标记和带预发布后缀的标签，不会把历史上误标为正式版的 RC 当成稳定版；没有稳定版时使用 `--prerelease`。
+更新来源固定为 `hatsune-miku/localshelld` 的 GitHub Releases，不需要 GitHub 登录。更新器不预设 Administrator/root 门槛；写入程序目录或控制已安装的系统服务需要额外权限时，由操作系统报错，再在 Administrator/root 终端重试。`--check` 不下载二进制、不修改文件、不停止服务。稳定通道同时排除 prerelease 标记和带预发布后缀的标签；即使 RC 在 GitHub 上标为正式 Release / Latest，版本号仍是 `-rc.*`，命令行更新仍需使用 `--prerelease`。
 
 更新器自动读取 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`，以及 Windows/macOS 当前用户的系统代理设置；支持 `NO_PROXY` 排除项。`HTTPS_PROXY` / `HTTP_PROXY` 可显式覆盖对应协议的系统代理，不需要关闭 TLS 校验。Windows/macOS 的 PAC 脚本不属于本功能支持范围，必要时指定静态 HTTP 代理。临时排障可在当前 PowerShell 中设置 `$env:HTTPS_PROXY = 'http://127.0.0.1:<代理端口>'`，再运行 `localshelld update --check --prerelease`。本机 daemon 通信与更新后的健康检查始终绕过代理。
 
@@ -268,7 +268,7 @@ pnpm --dir web test:e2e
 
 浏览器测试使用临时配置和虚拟 WebAuthn 认证器，验证注册、登录、签发、复制与撤销，不读取真实凭据。Win32 适配器测试覆盖真实原生控件、Unicode、DPI、到期和关闭回传。`cargo run --example desktop_smoke` 可打开一个不连接 daemon、不创建 shell、不会授予权限的桌面测试窗口；用于人工检查焦点和键盘操作。
 
-`main` 分支 push 触发 `CI` 后，只有全部平台测试、构建并上传成品成功，`Release Candidate` 才会接续运行。它按平台分别下载该次 CI 成品（不重复构建），打包为 Windows ZIP、Linux/macOS tar.gz，生成 `SHA256SUMS`，并以 `v<项目版本>-rc.<CI序号>.<重试序号>` 创建 GitHub prerelease。PR 检查不会发布 RC；正式版 `Release` 工作流也明确排除 `-rc.*` tag。重试发布用的 CI 时需重跑全部平台；打包阶段会拒绝不同重试序号的版本混装。
+`main` 分支 push 触发 `CI` 后，只有全部平台测试、构建并上传成品成功，`Release Candidate` 才会接续运行。它按平台分别下载该次 CI 成品（不重复构建），打包为 Windows ZIP、Linux/macOS tar.gz，生成 `SHA256SUMS`，并以 `v<项目版本>-rc.<CI序号>.<重试序号>` 创建 GitHub Release，显式关闭 Pre-release 标记并设为 Latest，方便从仓库首页下载。版本号和包内版本仍保留 RC 后缀，命令行更新使用 `--prerelease`。PR 检查不会发布 RC；正式版 `Release` 工作流也明确排除 `-rc.*` tag。重试发布用的 CI 时需重跑全部平台；打包阶段会拒绝不同重试序号的版本混装。
 
 ## License
 

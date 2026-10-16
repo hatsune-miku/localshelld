@@ -30,6 +30,16 @@ fn cli() -> Command {
 
 #[tokio::test]
 async fn actual_user_daemon_executes_as_current_user_without_root_backend() {
+    verify_user_daemon(true).await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windowless_user_daemon_keeps_the_native_desktop_event_loop_and_http_alive() {
+    verify_user_daemon(false).await;
+}
+
+async fn verify_user_daemon(headless: bool) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("user/config.toml");
     let mut init = cli()
@@ -52,8 +62,9 @@ async fn actual_user_daemon_executes_as_current_user_without_root_backend() {
         let error = String::from_utf8_lossy(&initialized.stderr);
         assert!(error.contains("non-elevated"), "user init failed: {error}");
         let serve = cli()
-            .args(["serve", "--user", "--headless", "--config"])
+            .args(["serve", "--user", "--config"])
             .arg(&path)
+            .args(headless.then_some("--headless"))
             .output()
             .unwrap();
         assert!(!serve.status.success());
@@ -69,8 +80,9 @@ async fn actual_user_daemon_executes_as_current_user_without_root_backend() {
     drop(reservation);
     let mut daemon = Daemon(
         cli()
-            .args(["serve", "--user", "--headless", "--config"])
+            .args(["serve", "--user", "--config"])
             .arg(&path)
+            .args(headless.then_some("--headless"))
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()

@@ -45,6 +45,9 @@ fn installation_prepares_credentials_now_and_preserves_existing_manual_trust() {
         assert!(!path.exists());
         return;
     }
+    let prompt = String::from_utf8_lossy(&result.stdout);
+    assert!(prompt.contains("User daemon configuration is missing"));
+    assert!(prompt.contains("system daemon password is NOT being reset"));
     let config = Config::load(&path).unwrap();
     assert_eq!(config.bind, "127.0.0.1:32120".parse().unwrap());
     assert_eq!(config.privileged_daemon, "127.0.0.1:33319".parse().unwrap());
@@ -69,6 +72,7 @@ fn installation_prepares_credentials_now_and_preserves_existing_manual_trust() {
         "{}",
         String::from_utf8_lossy(&repeated.stderr)
     );
+    assert!(!String::from_utf8_lossy(&repeated.stdout).contains("New Master Password"));
     let mismatch = prepare(&path, "127.0.0.1:33321", "");
     assert!(!mismatch.status.success());
     assert!(String::from_utf8_lossy(&mismatch.stderr).contains("not overwritten"));

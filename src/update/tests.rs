@@ -27,7 +27,7 @@ fn release(tag: &str, prerelease: bool, draft: bool) -> Release {
 }
 
 #[test]
-fn selects_by_semver_not_api_order_or_mislabelled_rc() {
+fn selects_by_semver_not_api_order_or_promoted_rc() {
     let versions = || {
         vec![
             release("v0.1.0-rc.10.1", false, false),
