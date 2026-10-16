@@ -6,6 +6,9 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail, ensure};
 
+#[cfg(windows)]
+mod windows_uninstall;
+
 pub fn install(config: &Path) -> Result<()> {
     let config = config
         .canonicalize()
@@ -29,8 +32,16 @@ pub fn install(config: &Path) -> Result<()> {
 }
 
 pub fn uninstall() -> Result<()> {
+    // Running the daemon must remain non-elevated, but an administrator-owned
+    // Task Scheduler registration can require this same user's elevated token.
+    #[cfg(windows)]
+    require_interactive_owner()?;
+    #[cfg(unix)]
+    super::require_user()?;
     uninstall_native()?;
-    println!("localshelld user daemon uninstalled. Configuration and seal.key were preserved.");
+    println!(
+        "localshelld user autostart removed (or already absent). Configuration, seal.key and authorization data were preserved."
+    );
     Ok(())
 }
 
@@ -270,7 +281,7 @@ pub fn require_interactive_owner() -> Result<()> {
         .output()?;
     ensure!(
         output.status.success(),
-        "unable to inspect the Windows installation identity"
+        "unable to inspect the Windows user-management identity"
     );
     let identity: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     ensure!(
@@ -278,7 +289,7 @@ pub fn require_interactive_owner() -> Result<()> {
             identity["sid"].as_str().unwrap_or_default(),
             identity["session"].as_u64().unwrap_or_default()
         ),
-        "combined installation requires an Administrator terminal of the intended logged-in user, not LocalSystem/Session 0; use --system-only for a headless installation"
+        "user daemon management requires the intended logged-in account (standard or Administrator), not LocalSystem/Session 0; use --system-only on headless hosts"
     );
     Ok(())
 }
@@ -391,12 +402,7 @@ function Confirm-UserTask($actual, $expected) {
 
 #[cfg(windows)]
 fn uninstall_native() -> Result<()> {
-    let task = format!("localshelld-user-{}", sid()?);
-    // An already stopped task need not have a running instance to end.
-    let _ = super::windows_command("schtasks.exe")?
-        .args(["/End", "/TN", &task])
-        .output()?;
-    super::checked(super::windows_command("schtasks.exe")?.args(["/Delete", "/TN", &task, "/F"]))
+    windows_uninstall::uninstall()
 }
 
 #[cfg(test)]

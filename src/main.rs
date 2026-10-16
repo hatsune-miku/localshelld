@@ -91,10 +91,14 @@ enum CommandKind {
         #[arg(long)]
         start: bool,
     },
-    /// Stop and unregister the native system service without deleting configuration.
+    /// Stop and unregister both daemons without deleting configuration or authorization data.
     Uninstall {
+        /// Remove only this account's user autostart (Windows also permits its elevated token).
         #[arg(long)]
         user: bool,
+        /// Remove only the system service, leaving user autostart unchanged.
+        #[arg(long, conflicts_with = "user")]
+        system_only: bool,
     },
     /// Check for or install an update from the official GitHub Releases.
     Update(update::Options),
@@ -208,13 +212,15 @@ async fn run_command(command: CommandKind) -> Result<()> {
             })
             .await?
         }
-        CommandKind::Uninstall { user } => {
-            if user {
-                require_user()?;
-                user_service::uninstall()
-            } else {
-                uninstall()
-            }
+        CommandKind::Uninstall { user, system_only } => {
+            tokio::task::spawn_blocking(move || {
+                if user {
+                    user_service::uninstall()
+                } else {
+                    installation::uninstall(system_only)
+                }
+            })
+            .await?
         }
         CommandKind::Update(options) => {
             tokio::task::spawn_blocking(move || update::run(options)).await?
@@ -501,7 +507,7 @@ fn install_system(config_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn uninstall() -> Result<()> {
+fn uninstall_system() -> Result<()> {
     if !is_elevated()? {
         bail!("service uninstallation requires Administrator/root");
     }
@@ -706,12 +712,34 @@ mod tests {
     }
 
     #[test]
-    fn parses_uninstall_subcommand() {
+    fn uninstall_defaults_to_both_daemons_and_rejects_conflicting_scopes() {
         let cli = Cli::try_parse_from(["localshelld", "uninstall"]).unwrap();
         assert!(matches!(
             cli.command,
-            CommandKind::Uninstall { user: false }
+            CommandKind::Uninstall {
+                user: false,
+                system_only: false
+            }
         ));
+        let cli = Cli::try_parse_from(["localshelld", "uninstall", "--user"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            CommandKind::Uninstall {
+                user: true,
+                system_only: false
+            }
+        ));
+        let cli = Cli::try_parse_from(["localshelld", "uninstall", "--system-only"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            CommandKind::Uninstall {
+                user: false,
+                system_only: true
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["localshelld", "uninstall", "--user", "--system-only"]).is_err()
+        );
     }
 
     #[test]

@@ -91,11 +91,15 @@ sudo /usr/local/bin/localshelld install --config /Library/localshelld/config.tom
 sudo launchctl print system/dev.localshelld
 ```
 
-卸载系统服务需要 Administrator/root 权限。该操作会停止并注销服务，但保留配置文件和 `seal.key`：
+`uninstall` 默认停止并注销系统服务和当前登录用户的自启动项，与默认安装行为对应。需要 Administrator/root 权限；Linux/macOS 应从目标用户的登录会话通过 `sudo` 执行。配置、`seal.key`、配对和 Passkey 数据均保留：
 
 ```powershell
 ./target/release/localshelld uninstall
+# 仅卸载系统服务，保留用户端（也适用于无用户桌面的主机）
+./target/release/localshelld uninstall --system-only
 ```
+
+只移除当前用户端可用 `localshelld uninstall --user`。Windows 允许以同一账户的普通或管理员令牌执行此卸载；由管理员创建的计划任务可能需要 `sudo localshelld uninstall --user`。SYSTEM/Session 0 不能代替登录用户卸载用户任务。运行、初始化和安装用户 daemon 的非提权限制不变。卸载仅管理已注册的服务/自启动，不会按端口查杀手动启动的其他进程。
 
 系统 daemon 默认监听 `127.0.0.1:32119`，在此签发的令牌允许高权限操作：
 
@@ -171,7 +175,7 @@ localshelld update --tag v0.1.0-rc.8.1      # 指定标签（示例）
 
 更新前先完成下载、SHA-256 校验、平台匹配和二进制版本检查，再备份旧程序并更新。已安装的系统服务只在原本运行时停止和恢复；不会改写服务注册、配置、Master Password 或 `seal.key`。重启会中断会话并使全部运行期 token 失效。新版本服务状态与 `/health` 版本检查失败时，自动恢复旧二进制并尝试恢复原服务；回滚本身失败会保留备份并明确报错。
 
-更新器管理的是系统服务，不会跨用户会话控制用户 daemon。若两种 daemon 共用同一个二进制，更新前请在普通用户终端执行 `localshelld uninstall --user`，更新后再执行 `localshelld install --user`。Windows 上仍运行的用户 daemon 可能占用二进制；Unix 上未重启的进程仍运行旧版本。
+更新器管理的是系统服务，不会跨用户会话控制用户 daemon。若两种 daemon 共用同一个二进制，更新前请执行 `localshelld uninstall --user`（Windows 的管理员创建任务可能需要同一用户提权执行），更新后在普通用户终端执行 `localshelld install --user`。Windows 上仍运行的用户 daemon 可能占用二进制；Unix 上未重启的进程仍运行旧版本。
 
 - Linux/macOS：在安装目录所在文件系统暂存完整文件，然后用 `rename` 原子替换路径，并同步目录。已运行进程继续使用旧文件，重启后使用新文件；这不是进程热升级，也不保证突然断电时整套服务操作具有事务性。
 - Windows：把替换交给隐藏的本地助手，等待原 CLI 退出后操作。命令输出助手日志路径；只有日志中的 `SUCCESS` 才表示完成，启动助手本身不代表更新成功。更新失败详情也写在该日志中。

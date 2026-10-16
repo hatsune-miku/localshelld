@@ -54,6 +54,31 @@ pub fn install(system_path: PathBuf, user_path: Option<PathBuf>, system_only: bo
     Ok(())
 }
 
+pub fn uninstall(system_only: bool) -> Result<()> {
+    ensure!(
+        super::is_elevated()?,
+        "combined/system uninstallation requires Administrator/root; use --user to remove only the current user's autostart"
+    );
+    if system_only {
+        return super::uninstall_system();
+    }
+    // Resolve the same login identity as install before changing either side.
+    let owner = LoginOwner::detect()?;
+    uninstall_both(|| owner.uninstall(), super::uninstall_system)?;
+    println!(
+        "Both daemon registrations were removed (or already absent). Configuration, seal.key, pairing and passkeys were preserved."
+    );
+    Ok(())
+}
+
+fn uninstall_both(
+    user: impl FnOnce() -> Result<()>,
+    system: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    user().context("user autostart removal failed; system service was left unchanged")?;
+    system().context("user autostart was removed, but system service removal failed; fix the error and rerun uninstall")
+}
+
 pub fn setup_user(path: Option<PathBuf>, system: Option<SocketAddr>, start: bool) -> Result<()> {
     let path = path.map_or_else(user_config_path, Ok)?;
     let config = prepare_user_config(&path, system, |path| {
@@ -202,11 +227,26 @@ impl LoginOwner {
             Ok(())
         }
     }
+
+    fn uninstall(&self) -> Result<()> {
+        #[cfg(windows)]
+        {
+            // Administrative task ownership does not change the account/SID
+            // whose limited user task is being removed.
+            super::user_service::uninstall()
+        }
+        #[cfg(unix)]
+        {
+            super::checked(
+                owner_command(self.uid, &std::env::current_exe()?).args(["uninstall", "--user"]),
+            )
+        }
+    }
 }
 
 #[cfg(any(unix, test))]
 fn parse_owner_uid(value: Option<&str>) -> Result<u32> {
-    let uid: u32 = value.context("cannot identify the login user; invoke install through sudo from that user, or explicitly use --system-only")?
+    let uid: u32 = value.context("cannot identify the login user; invoke install/uninstall through sudo from that user, or explicitly use --system-only")?
         .parse().context("invalid SUDO_UID")?;
     ensure!(
         uid != 0,
@@ -249,6 +289,36 @@ fn owner_command(uid: u32, executable: &Path) -> std::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_uninstall_removes_user_first_and_reports_partial_failure() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(Vec::new());
+        uninstall_both(
+            || {
+                calls.borrow_mut().push("user");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("system");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["user", "system"]);
+
+        let error = uninstall_both(
+            || bail!("access denied"),
+            || panic!("must not uninstall the system service after user removal failed"),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("system service was left unchanged"));
+        assert!(format!("{error:#}").contains("access denied"));
+
+        let error = uninstall_both(|| Ok(()), || bail!("service busy")).unwrap_err();
+        assert!(format!("{error:#}").contains("user autostart was removed"));
+        assert!(format!("{error:#}").contains("service busy"));
+    }
 
     #[test]
     fn login_owner_never_silently_falls_back_to_root() {
