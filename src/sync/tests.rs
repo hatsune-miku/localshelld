@@ -241,6 +241,20 @@ async fn concurrent_reads_rotate_refresh_token_only_once_and_store_it_encrypted(
 }
 
 #[tokio::test]
+async fn failed_cache_write_does_not_consume_the_refresh_token() {
+    let (mock, url, server) = server().await;
+    let state = device(&url, true).await;
+    let file = tempfile::NamedTempFile::new().unwrap();
+    state.settings.lock().await.config_path = Some(file.path().join("config.toml"));
+    assert!(state.read_vault().await.is_err());
+    assert_eq!(mock.renewals.load(Ordering::SeqCst), 0);
+    state.settings.lock().await.config_path = None;
+    assert!(state.read_vault().await.is_ok());
+    assert_eq!(mock.renewals.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
 async fn worker_overwrites_idle_client_cache_after_cloud_notification() {
     let (mock, url, server) = server().await;
     let a = device(&url, false).await;

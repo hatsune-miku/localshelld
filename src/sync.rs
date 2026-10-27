@@ -207,7 +207,7 @@ impl AppState {
     }
     // Caller holds self.sync across all helpers suffixed _locked.
     async fn tokens_locked(&self) -> Result<Option<(SavedSync, Tokens)>, ApiError> {
-        let settings = self.settings.lock().await;
+        let mut settings = self.settings.lock().await;
         let Some(saved) = settings.saved.sync.clone() else {
             return Ok(None);
         };
@@ -215,10 +215,15 @@ impl AppState {
             .map_err(|_| ApiError::internal("sync token decryption failed"))?;
         let tokens: Tokens = serde_json::from_slice(&bytes)
             .map_err(|_| ApiError::internal("invalid sync tokens"))?;
-        drop(settings);
         if tokens.expires_at > Utc::now().timestamp() + 40 {
             return Ok(Some((saved, tokens)));
         }
+        // A refresh consumes the previous token. Check the exact private-write
+        // path before that irreversible exchange, including platform ACL/known
+        // folder setup; a read-only cache must not invalidate its own login.
+        let unchanged = settings.saved.clone();
+        settings.save(unchanged).await?;
+        drop(settings);
         let next: Tokens = request(
             Method::POST,
             &saved.url,
