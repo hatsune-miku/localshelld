@@ -182,9 +182,11 @@ async fn root_loss_expiry_and_shell_exit_invalidate_linked_user_session() {
             .await
             .is_err()
     );
-    let expiring = root.auth.lock().await.issue_token(Some(1)).unwrap().0;
+    // Expiry uses whole Unix seconds, so a one-second token can have almost no
+    // usable lifetime. Allow both real shells to start on a loaded CI runner.
+    let expiring = root.auth.lock().await.issue_token(Some(10)).unwrap().0;
     let second = user.enter(&expiring).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if !user
                 .sessions
