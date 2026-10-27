@@ -1,0 +1,23 @@
+[package]
+name = "localshelld-native-process"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Windows token-aware, job-contained shell process adapter"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Environment",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }

@@ -98,7 +98,7 @@ fn shell_and_native_children_have_no_visible_console() {
         assert!(result.success, "{}", result.output);
         assert!(result.output.contains("child output"), "{}", result.output);
         let result = shell.execute("cmd /c exit 7", Some(20)).await.unwrap();
-        assert_eq!(result.exit_code, 7);
+        assert_eq!(result.exit_code, Some(7));
         shell.terminate().await;
     });
 }

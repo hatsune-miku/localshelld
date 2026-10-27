@@ -5,6 +5,7 @@ import { Button, CakeProvider } from '@a1knla/cakeui'
 import { Credentials } from './components/Credentials'
 import { DesktopSettings } from './components/DesktopSettings'
 import { Login } from './components/Login'
+import { Secrets } from './components/Secrets'
 import { Tokens } from './components/Tokens'
 
 import { type Health, type LoginResult, api } from '../api'
@@ -73,6 +74,7 @@ export function App() {
             <nav className="workspace-nav" aria-label="授权管理">
               {[
                 ['tokens', '访问令牌'],
+                ['secrets', '凭据'],
                 ['credentials', '验证方式'],
                 ['desktop', '桌面授权'],
               ].map(([id, label]) => (
@@ -90,6 +92,7 @@ export function App() {
             </nav>
             <main className="workspace-content">
               {section === 'tokens' && <Tokens session={login.session} scope={scope} />}
+              {section === 'secrets' && <Secrets session={login.session} />}
               {section === 'credentials' && (
                 <Credentials session={login.session} onPasswordChanged={() => setLogin(null)} />
               )}

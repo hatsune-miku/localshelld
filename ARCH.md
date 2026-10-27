@@ -32,14 +32,27 @@
   - 销毁特权会话（参数：会话handle）
   - 销毁令牌（参数：令牌）
   - 用户签发的令牌默认有效期为 24 小时，用户可修改有效期，最长可选永久。不过需要提醒用户：由于令牌记录只存在于进程内存，通常当用户重启系统后，此前签发的任何令牌，不论有效期，都会自然失效。
-  - Windows 下，使用管理员（Administrators）身份；Linux 下，使用 root 权限。
+  - Windows 下区分当前用户、同用户管理员与 LocalSystem；Linux/macOS 高权限身份为 root。
 
 ## 用户态 daemon 与权限选择（补充需求）
 
 - 保留高权限系统 daemon，并新增以当前非高权限用户身份运行的 daemon；普通命令由用户 daemon 执行。
-- MCP 工具使用 `localshelld_enter`、`localshelld_run`、`localshelld_destroy_session` 和 `localshelld_revoke_token`。
-- `localshelld_run` 必须显式传入 boolean `sudo`：false 选择当前用户身份，true 选择高权限系统 daemon。两种执行身份的 shell 状态隔离，禁止自动提权或失败后换身份执行。
+- MCP 工具使用 `enter_interactive`、`enter_preauthorized`、`run`、`destroy`、`revoke`；工具名保留 interactive 与 pre-authorized 两类授权的语义。
+- Windows 的 `run` 必须显式传入 enum `privilege_level`：`nt-authority/system`、`as-administrator` 或 `current-user`。`as-administrator` 使用同一当前用户的管理员令牌，保留 OS 用户 profile、HKCU、用户级 PATH；不以 SYSTEM 冒充。Linux/macOS 维持 boolean `sudo`。各身份 shell 状态隔离，禁止失败后换身份执行。
 - 用户态独立令牌仅允许普通执行；高权限执行仍需用户亲自签发的系统令牌。
+- 支持单次字符串 stdin + EOF、分别返回 stdout/stderr。取消或显式超时销毁整个 handle 及关联进程树，返回部分输出和结束原因；断连不自动取消。普通命令非零退出码不销毁会话。
+- 结果提供实际身份、毫秒耗时、cwd、截断和会话存活状态；到期时间明确 Unix 秒与 UTC ISO 8601。
+- 不提供长任务、后台任务、PTY、后续 write_stdin 或任务轮询系统；任务调度属于 harness。
+- 授权防刷需另行讨论策略，本次不调整记忆选择或弹窗策略。
+
+## 环境变量凭据授权（补充需求）
+
+- 后台注册多个 key/value，Key 为大写环境变量名，值加密保存；前后端都验证名称。
+- secret 系列公开工具只提供 `secrets_list`，匿名列出 key，不提供获取 value 的接口。
+- 两个 enter 均支持可选 `secret_keys`，复用现有执行令牌与交互授权；弹窗额外显示本次 key 列表。
+- 授权后按会话保存环境快照，自动注入各身份 shell 及其后代进程，不修改 daemon 的全局环境，不把 value 拼入命令或工具结果。
+- 已记忆允许不会无提示扩大到新的 key。预授权执行 token 可选择全部已注册凭据，不新增另一套 secret token。
+- 后台轮换或删除不改变已有会话；修改 key 选择须销毁后重新 enter。环境注入减少正常流程的明文传递，但不隔离能主动读取环境的 shell。
 
 ## 用户身份与授权
 

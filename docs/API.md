@@ -1,58 +1,102 @@
 # HTTP 与 MCP API
 
-推荐 base URL：用户 daemon 的 `http://127.0.0.1:32120`。系统 daemon 默认在 `http://127.0.0.1:32119`。授权值通过 JSON body 传递，以下示例使用占位符。
+推荐用户 daemon：`http://127.0.0.1:32120`；系统 daemon 默认 `http://127.0.0.1:32119`。执行凭据放在 JSON body 中，不放 URL。两端升级时应使用相同版本。
 
-## 普通授权接口
+## 进入与执行
 
-`GET /health` 无需凭据，返回 `status`、`service`、`daemon`（`user` 或 `privileged`）、`version` 和 `commit`。版本为构建时嵌入的 Release 版本（不带 `v` 前缀），本地构建为 `<Cargo版本>-dev`。命令行更新器使用此接口确认服务运行的是预期版本。HTTP/MCP 不提供更新或下载执行接口。
+`GET /health` 无需凭据，返回 `status`、`service`、`daemon`、`version`、`commit`。本地构建版本为 `<Cargo版本>-dev`。HTTP/MCP 不提供更新或下载执行接口。
 
-进入会话：
+`POST /v1/sessions/enter`：`{"token":"<LOCALSHELLD_TOKEN>","secret_keys":["JENKINS_CI_TOKEN"]}`。`secret_keys` 可省略。
 
-```http
-POST /v1/sessions/enter
-Content-Type: application/json
+返回 `handle`、`reused`、`secret_keys`、`shell`、`platform`、`daemon`、`privilege_levels`、`identities`、`expires_at`、`expires_at_iso`、`message`。Linux/macOS 另有 `sudo_available`。同一 token 有存活会话时复用同一 handle，`reused:true` 不表示命中记忆授权。`expires_at` 是 Unix epoch **秒**，`expires_at_iso` 是 UTC ISO 8601；永久令牌两者均为 null。
 
-{"token":"<LOCALSHELLD_TOKEN>"}
-```
+`identities` 按执行身份名返回实际操作系统账户信息。Windows 包含 user、SID、is_system、elevated、integrity、session_id；Unix 包含 user、uid、elevated。仅报告当前可用且授权允许的身份，不以平台名推断 SYSTEM。不同身份的变量、目录和环境独立持久化，不复制已运行 shell 的状态。
 
-返回 `{ "handle": "...", "reused": false, "shell": "powershell", "platform": "windows", "daemon": "user", "sudo_available": true, "expires_at": 1800000000, "message": "..." }`。Linux/macOS 返回 `shell: "bash"`，`platform` 分别为 `"linux"` / `"macos"`。同一 token 存在会话时，`reused` 为 `true` 且 handle 不变。永久令牌的 `expires_at` 为 `null`。
-
-用户 daemon 接受其自身签发的令牌（`sudo_available=false`），也接受系统 daemon 签发的令牌（验证后 `sudo_available=true`）。后一种 handle 关联用户 shell 和高权限 shell。两端的变量、目录、函数和环境完全独立；单一 shell 内串行执行，不同身份的命令可以并行。令牌、Master Password 和 TOTP 不在不同 daemon 的配置文件间共享。
-
-执行命令：
-
-```http
-POST /v1/commands/run
-Content-Type: application/json
-
-{"handle":"<HANDLE>","command":"Get-Process | Sort-Object CPU -Descending | Select-Object -First 5","sudo":false,"timeout_seconds":30}
-```
-
-返回：
+`POST /v1/commands/run` 的 Windows 请求：
 
 ```json
-{"output":"...","exit_code":0,"success":true,"truncated":false,"session_ended":false}
+{
+  "handle": "<HANDLE>",
+  "command": "[Console]::Out.Write([Console]::In.ReadToEnd())",
+  "privilege_level": "as-administrator",
+  "stdin": "hello\n",
+  "timeout_seconds": 30
+}
 ```
 
-示例命令使用 Windows PowerShell 语法。Linux/macOS 应使用 Bash，例如 `ps -eo pid,comm | head -n 6`。命令中不得包含 NUL 字节，否则返回 400 且会话保持可用。
+Windows `privilege_level` 必填，且仅允许：
 
-`sudo` 是必填 boolean，不接受省略、null、字符串或数字。`false` 只在用户 daemon 的账户下运行，`true` 在高权限 daemon 的账户下运行。用户态令牌请求 `sudo=true` 返回 403。直接向系统 daemon 请求 `sudo=false` 时，经显式配对的加密通道转给用户 daemon；未配对返回 503 并提示配对或改用 32120。不会回退到其他身份，也不会重试可能已经执行的命令。HTTP 类型错误返回 422；MCP 参数错误返回 JSON-RPC error。
+| 值 | 执行方式 |
+|---|---|
+| `current-user` | 用户 daemon 的非提权账户；系统入口经配对加密桥转发 |
+| `as-administrator` | 已配对当前用户的 linked elevated token；保留 USERPROFILE、HKCU 和用户 PATH |
+| `nt-authority/system` | 必须确实由 LocalSystem 执行，不能用普通管理员账户冒充 |
 
-`timeout_seconds` 省略或为 `null` 时，命令没有执行时间上限；显式传入时必须是正整数，不受原先 300 秒的限制。超时会销毁整个 handle。单 daemon 会话的令牌过期禁止后续调用；跨 daemon 会话还会监听高权限授权到期并终止两端执行。
+`as-administrator` 不是修改 SYSTEM 环境变量：校验配对用户进程的创建时间、SID、登录 session 和令牌，再使用同一用户的管理员令牌。无 linked token、未配对或所需 OS 权限不足时失败，不换账户执行。管理员 shell 在 broker 的非交互 session 内运行；不提供交互桌面或映射网络驱动器保证。`-NoProfile` 仍然有效：操作系统用户 profile/HKCU 保留，但不自动运行 PowerShell profile 脚本。
 
-PowerShell 的 success/error/warning/verbose/debug/information 流通过 `*>&1` 合并为文本。`exit_code` 优先采用原生进程的 `$LASTEXITCODE`；非终止 PowerShell 错误返回 1。Bash 合并 stdout/stderr，返回最后一条命令的退出码（管道遵从当前 `pipefail` 设置）。返回的文本最多保留 `max_output_bytes` 字节，非 UTF-8 字节以替换字符解码。
+Linux/macOS 保持原有 boolean `sudo`，不接受 `privilege_level`：
 
-同一会话的命令串行执行，变量、函数、环境和目录持续保留；调用方断开连接不会遗弃未读响应或自动取消执行。销毁会话、撤销令牌及服务关闭均可取消正在执行及排队中的命令，并向 shell 所在进程组发送信号，一并终止命令启动的子进程和后台任务（主动 `setsid`/新建进程组脱离者除外）。命令不支持交互 stdin；Bash stdin 为 `/dev/null`。
+```json
+{"handle":"<HANDLE>","command":"cat; id -u","sudo":false,"stdin":"hello\n","timeout_seconds":30}
+```
 
-`exit`、`exec` 或 `set -e` 下的失败等使 shell 退出的操作会结束会话。此时本次调用仍返回已产生的输出和 shell 的实际退出码，并将 `session_ended` 置为 `true`；该 handle 之后的调用将失败。正常命令的 `session_ended` 为 `false`。
+`sudo:false` 为用户 daemon 的普通账户，`sudo:true` 为 root。用户端自身签发的令牌在所有平台都只能执行当前用户命令。错误身份不会自动回退；不重试可能已执行的命令。缺失或类型不正确的字段返回 HTTP 400/422；无法取得请求身份或无权限返回明确错误。Windows 的旧 boolean `sudo` 被拒绝，即使同时提供正确的 `privilege_level`。
 
-销毁会话：`POST /v1/sessions/destroy`，body 为 `{ "handle": "<HANDLE>" }`。
+`stdin` 是可选 UTF-8 字符串，按字节供本次命令读取，写完即 EOF；省略等于空输入。允许 stdin 内含 NUL，但 command 内 NUL 被拒绝。子程序负责按其自身编码约定解码；本服务不重写用户命令。不提供后续 write_stdin、PTY、实时输出、后台任务或任务轮询接口。
 
-撤销令牌：`POST /v1/tokens/revoke`，body 为 `{ "token": "<LOCALSHELLD_TOKEN>" }`。服务仍持有记录的过期 token 可以用于撤销自身。
+正常返回示例（identity 内账户为示意）：
 
-系统 daemon 还提供两个供用户 daemon 使用的带 handle 认证接口：`POST /v1/sessions/validate` 立即验证；`POST /v1/sessions/watch` 最多等待 15 秒或提前响应会话结束，两者 body 均为 `{"handle":"..."}`。用户 daemon 在普通命令前验证上游授权，并持续长轮询；撤销、到期、上游关闭或通信失败都会取消关联用户 shell。客户端不需要直接调用这些接口。控制请求限时，命令请求沿用显式的 `timeout_seconds`；丢失响应后不会自动重试。
+```json
+{
+  "stdout":"hello\n","stderr":"","output":"hello\n",
+  "exit_code":0,"success":true,
+  "truncated":false,"stdout_truncated":false,"stderr_truncated":false,
+  "duration_ms":120,"timed_out":false,
+  "session_alive":true,"session_ended":false,"session_ended_reason":null,
+  "cwd":"C:\\Users\\owner",
+  "identity":{"user":"PC\\owner","sid":"S-1-5-21-...","is_system":false,"elevated":true,"integrity":"High","session_id":0}
+}
+```
+
+stdout、stderr 分别捕获，各最多保存 `max_output_bytes` 字节；非 UTF-8 输出用替换字符解码。超过上限继续排空，以维持会话协议。旧 `output` 兼容字段是 stdout 后接 stderr，不表示两者的时间交错顺序。PowerShell error 流进入 stderr，其它逻辑流暂不提供独立字段。原生程序 stderr 有文本不意味着失败；以 exit_code/success 判断。PowerShell 保留原生进程退出码，PowerShell 非终止错误返回 1；Bash 遵循最后命令及当前 pipefail 设置。
+
+`cwd` 是完成时 shell 工作目录，不能在中断后可靠获取时为 null。`identity` 是承载脚本的 shell 的真实 OS 身份，不是脚本自行另起的任意程序身份。`duration_ms` 为该命令开始执行后的耗时，不含串行队列等待时间。
+
+## 超时、断连与取消
+
+- `timeout_seconds` 省略或 null 时无默认执行超时；显式值为正整数，不设旧的 300 秒上限。
+- **普通命令非零退出码不销毁会话**。直接执行 `exit`、替换 shell 的 `exec`、或 Bash `set -e` 引起 shell 退出时，会结束整个 handle。
+- **执行超时销毁整个 handle**，终止所有关联身份的 shell/进程树。返回已捕获的 stdout/stderr、`timed_out:true`、`session_alive:false`、`session_ended:true`、`session_ended_reason:"timeout"`、`exit_code:null`；不伪造退出码，也不承诺保留被中断的 shell 状态。
+- `session_ended_reason` 为 `shell_exited`、`timeout`、`cancelled` 或 null。`cancelled` 包括显式取消、销毁、撤销与关闭导致的中断；队列中尚未开始的命令可能返回会话已结束错误。
+- **HTTP 断连或客户端自身超时不自动停止命令**。worker 继续消费输出，避免下次调用串包；客户端不得因响应丢失而盲目重试有副作用的命令。
+- `POST /v1/sessions/destroy`，body `{"handle":"<HANDLE>"}`，显式销毁会话。`POST /v1/tokens/revoke`，body `{"token":"<TOKEN>"}`，撤销并清理该令牌所有会话。服务仍持有记录的过期 token 可以撤销自身。
+- Windows shell 在恢复执行前就加入禁止 breakaway 的 kill-on-close Job Object，销毁时清理其整棵进程树。Unix 清理可追踪后代和原始进程组；主动 double-fork 后完全脱离、被重新托管的 daemon 不在保证范围内。
+- 单 daemon 令牌到期阻止后续调用；跨 daemon 会话的授权到期监视还会取消关联命令。系统端内部 `/v1/sessions/validate` 与 `/v1/sessions/watch` 使用 handle 验证，watch 最多等 15 秒；客户端无需直接使用。
 
 ## 管理接口
+
+### 环境变量凭据
+
+`GET /v1/secrets/keys` 无需授权，返回 `{"keys":["JENKINS_CI_TOKEN","OPENAI_API_KEY"]}`，只列名称。没有公开读取 value 的接口。
+
+两个 MCP enter 工具及 HTTP enter 均接收可选 `secret_keys: string[]`。key 同时是环境变量名，符合 `[A-Z_][A-Z0-9_]{0,127}`；后端同样校验大写。最多保存及请求 64 个 key，重复请求名会去重排序。value 为 1–16,384 UTF-8 字节，不能含 NUL。`LOCALSHELLD_*`、`BASH_ENV`、`ENV`、`SHELLOPTS`、`BASHOPTS`、`CDPATH` 为 shell 运行时保留名称。
+
+- 交互弹窗显示本次请求的完整 key 列表，不显示 value。记忆允许仅覆盖已确认的 key；旧的 shell 允许记忆或新增 key 仍需再次确认。记忆拒绝继续拒绝该 agent 的请求。
+- 预授权使用原有执行 token，不另签发 secret token。同一有效 token 可以选择任意已注册 key；执行身份权限不变。
+- 新会话省略或传空列表时不注入凭据。存活会话重新 enter 且省略或传空列表时保留原选择；显式传不同的非空列表会报错，须先 destroy 再进入。
+- 注入发生在子进程创建时，不拼接 shell 赋值语句，不修改 daemon 的全局环境。当前用户、管理员和 SYSTEM/root 的 shell 使用同一份会话快照，子进程正常继承。各身份执行后的环境变更仍彼此独立。
+- 后台更换或删除凭据不改变已有快照。销毁后重新 enter 才读取新值，且需再次提供所需 key；未知 key 使新建失败，不创建部分会话。
+- 配对后统一使用用户 daemon 的凭据库，两端管理页通过已有加密桥访问同一库。未配对时使用本 daemon 的库；配对不会复制或迁移原独立库。系统端无法连接已配对的凭据库时不会回退到另一份值。
+
+这些值不由列表、enter、会话元数据或管理响应回传。获得环境变量的 shell 及其子程序仍能主动打印、记录或发送它们，`run` 不提供防泄露隔离或可靠的任意输出脱敏。
+
+下列管理接口要求现有 10 分钟管理 session 的 Bearer header，执行 token 不能代替管理登录：
+
+| 接口 | Body / 返回 |
+|---|---|
+| `GET /v1/admin/secrets` | `{"keys":["JENKINS_CI_TOKEN"]}` |
+| `POST /v1/admin/secrets/put` | `{"key":"JENKINS_CI_TOKEN","value":"..."}`；创建或替换，返回 `{"saved":true}` |
+| `POST /v1/admin/secrets/remove` | `{"key":"JENKINS_CI_TOKEN"}`；返回 `{"removed":true}` |
 
 credential 格式为：
 
@@ -72,7 +116,7 @@ credential 格式为：
 
 Master/TOTP 失败在每个进程实例内限制为 5 次/分钟；成功验证会清除失败计数。
 
-管理接口只管理当前 daemon 的令牌，不转发 Master/TOTP。用户态 UI 签发的令牌永远不允许 `sudo=true`。跨 daemon 令牌可经用户 daemon 的 `/v1/tokens/revoke` 转交签发端撤销。
+管理接口只管理当前 daemon 的令牌，不转发 Master/TOTP。用户态 UI 签发的令牌永远只允许当前用户执行。跨 daemon 令牌可经用户 daemon 的 `/v1/tokens/revoke` 转交签发端撤销。
 
 ### 管理登录与凭据设置
 
@@ -103,30 +147,46 @@ Master/TOTP 失败在每个进程实例内限制为 5 次/分钟；成功验证�
 
 ## MCP
 
-`POST /mcp` 实现 JSON-RPC 2.0 和 MCP Streamable HTTP 的 JSON 响应，协议版本 `2025-06-18`。支持：
+`POST /mcp` 使用 JSON-RPC 2.0、MCP Streamable HTTP JSON 响应，协议版本 `2025-06-18`。支持 initialize、ping、tools/list、tools/call，以及 notifications/initialized、run 的 notifications/cancelled。
 
-- `initialize`
-- `notifications/initialized`（notification 返回 204）
-- `ping`
-- `tools/list`
-- `tools/call`
+工具列表只公布六个短名称：
 
-工具为 `localshelld_enter_interactive`、`localshelld_enter_with_preauthorized_credential`、`localshelld_run`、`localshelld_destroy_session`、`localshelld_revoke_token`。工具说明和 `initialize.instructions` 根据当前平台展示 PowerShell 或 Bash。两个 enter 工具均要求 `confirm_text: "OK"`，仅确认“尊重用户的个人隐私”。旧工具名 `localshelld_enter` 不再接受。服务无 MCP transport session 状态；权限会话由强随机 handle 标识。
+| 工具 | 用途 |
+|---|---|
+| `secrets_list` | 无需授权列出凭据 key，不返回 value |
+| `enter_interactive` | 桌面交互式请求授权，无 token 参数 |
+| `enter_preauthorized` | 使用用户事先签发的 token 进入 |
+| `run` | 显式选择身份，执行单次命令并传入可选 stdin |
+| `destroy` | 销毁会话及所有关联进程树 |
+| `revoke` | 撤销 token |
 
-长名称为 47 个字符，满足 [MCP 2025-11-25 的工具名建议](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names)。当前服务仍使用上述 `2025-06-18` 协议版本，不因改名宣称支持新版协议所有特性。
+旧 `localshelld_enter_interactive`、`localshelld_enter_with_preauthorized_credential`、`localshelld_run`、`localshelld_destroy_session`、`localshelld_revoke_token` 暂保留调用入口兼容，不重复列入 tools/list。Windows 参数仍必须升级为 privilege_level。更早的 `localshelld_enter` 不恢复。每个工具提供 inputSchema、outputSchema；结果同时有 content 文本和 structuredContent。
 
-### 交互式进入
+### 客户端取消
+
+initialize 响应通过 HTTP `Mcp-Session-Id` 返回强随机传输会话标识。客户端应在后续请求和通知中回传该 header。它只用于绑定请求归属，不替代 token/handle 执行授权。没有 header 的旧客户端仍可调用工具，但不能仅凭裸 requestId 取消命令。
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"localshelld_enter_interactive","arguments":{"agent_name":"Example Agent","request_reason":"检查本机开发环境并执行用户要求的构建。","confirm_text":"OK"}}}
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":17,"reason":"User cancelled"}}
 ```
 
-参数不含 token。`agent_name` 是 1–128 字符、无控制字符的自报名；`request_reason` 非空、最多 16,384 UTF-8 字节、不得含 NUL。缘由作为纯文本显示。结果在 MCP `content` 文本中以 JSON 返回：
+服务器只取消同一传输会话中仍在执行的 run，销毁其整个 handle 并清理进程树；取消通知与被取消的 HTTP 请求返回 204，不再给被取消请求发送工具结果。未知或已完成的 requestId、其他客户端的同号请求、没有归属信息的通知均不影响执行。交互授权仍使用固定 60 秒期限，不由此通知取消。闲置传输会话可回收；传输会话失效不会自动撤销执行 handle。当前无后台任务 API。
 
-- 接受：普通 enter 的会话字段，加 `status: "authorized"`、`btw`；不返回原始 token，也不返回 `automatic` 字段。记忆接受与本次点击接受使用相同中性文案。
-- 拒绝：`{"status":"denied","automatic":false,"btw":"..."}`；记忆拒绝为 `automatic:true`。
-- 超时：`{"status":"timed_out","timeout_ms":60000,"btw":"..."}`。忽略和关闭弹窗仍等到原始 60 秒截止时间。
+### 交互授权与预授权
 
-请求本身只有授权等待限时，已批准后创建 shell 等处理仍有开销。客户端应给此调用留出超过 60 秒的超时时间。无桌面/配对或通信故障返回明确错误，不产生授权；最多同时等待 8 个请求。窗口展示、HTTP、磁盘 IO 分离，不占用 GUI 消息循环等待网络。
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"enter_interactive","arguments":{"agent_name":"Example Agent","request_reason":"执行用户要求的本机检查。","confirm_text":"OK"}}}
+```
 
-系统入口的交互授权使用已配对用户 daemon 的弹窗；已配对用户入口则转给系统端统一决策，返回双权限会话。未配对用户入口只能批准当前用户权限。内部授权默认 24 小时，记录可在签发端管理页撤销；清除记忆不撤销已有授权。Windows 仅用 Win32 控件，Linux/macOS 的 WebView 仅通过进程内一次性回调提交决定。
+`enter_preauthorized` 参数为 `{"token":"<TOKEN>","confirm_text":"OK"}`。两个入口的 confirm_text 仅确认尊重用户个人隐私。需要注入凭据时添加 `"secret_keys":["JENKINS_CI_TOKEN"]`，后续 PowerShell 使用 `$env:JENKINS_CI_TOKEN`，Bash 使用 `$JENKINS_CI_TOKEN`，无需获取明文。
+
+agent_name 是 1–128 字符的自报名，不得有控制字符；request_reason 非空、最多 16,384 UTF-8 字节、不得有 NUL，按原文显示。交互结果：
+
+- 接受：普通 enter 字段，加 `status:"authorized"`、`btw`；不返回原始 token，不声称一定发生本次点击。
+- 拒绝：`{"status":"denied","automatic":false,"btw":"..."}`；记忆拒绝为 automatic:true。
+- 超时：`{"status":"timed_out","timeout_ms":60000,"btw":"..."}`。忽略、关闭弹窗仍等至原 60 秒截止时间。
+- btw 是用户在弹窗填写的附言，类型为 string，不是无来源的服务端噪音。
+
+客户端应给交互授权留出超过 60 秒的调用时间。无桌面/配对或通信失败时明确报错。最多同时等待 8 个请求；授权频率冷却与客户端凭据绑定尚未改变。名称只是自报显示信息，同名请求共享记忆，不是身份认证。
+
+配对用户入口转由系统端统一决策；未配对用户入口仅允许当前用户权限。内部交互授权默认 24 小时，可在签发端管理页面撤销。清除记忆不撤销已存在授权。token 和 handle 是 bearer 凭据，可能保存在客户端调用历史中，不应再次回显、写日志或放入 URL。

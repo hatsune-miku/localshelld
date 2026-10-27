@@ -126,6 +126,96 @@ async fn browser_cannot_submit_desktop_approval_and_mcp_checks_required_fields()
 }
 
 #[tokio::test]
+async fn remembered_shell_approval_does_not_silently_authorize_new_credentials() {
+    let prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = prompts.clone();
+    let (mut state, _) = desktop_state(Choice::Accept, true);
+    state.consent = Some(ConsentBroker::new(move |event| {
+        if let DesktopEvent::Show(prompt, reply) = event {
+            captured.lock().unwrap().push(prompt.secret_keys);
+            let _ = reply.send(Decision {
+                choice: Choice::Accept,
+                remember: true,
+                btw: String::new(),
+            });
+        }
+        Ok(())
+    }));
+    state
+        .settings
+        .lock()
+        .await
+        .saved
+        .remembered
+        .insert("agent".into(), true);
+    state
+        .put_secret("JENKINS_CI_TOKEN", "fixture-jenkins")
+        .await
+        .unwrap();
+    state
+        .put_secret("OPENAI_API_KEY", "fixture-openai")
+        .await
+        .unwrap();
+    let first = state
+        .enter_interactive_with_secrets("agent", "build", &["JENKINS_CI_TOKEN".into()])
+        .await
+        .unwrap();
+    assert_eq!(first["secret_keys"], json!(["JENKINS_CI_TOKEN"]));
+    assert!(!first.to_string().contains("fixture-jenkins"));
+    assert_eq!(prompts.lock().unwrap().len(), 1);
+    state
+        .enter_interactive_with_secrets("agent", "build again", &["JENKINS_CI_TOKEN".into()])
+        .await
+        .unwrap();
+    assert_eq!(prompts.lock().unwrap().len(), 1);
+    state
+        .enter_interactive_with_secrets(
+            "agent",
+            "also use OpenAI",
+            &["OPENAI_API_KEY".into(), "JENKINS_CI_TOKEN".into()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *prompts.lock().unwrap(),
+        vec![
+            vec!["JENKINS_CI_TOKEN"],
+            vec!["JENKINS_CI_TOKEN", "OPENAI_API_KEY"]
+        ]
+    );
+    let count = state.auth.lock().await.list().len();
+    assert!(
+        state
+            .enter_interactive_with_secrets("agent", "unknown", &["MISSING".into()])
+            .await
+            .is_err()
+    );
+    assert_eq!(state.auth.lock().await.list().len(), count);
+    assert_eq!(prompts.lock().unwrap().len(), 2);
+    state.shutdown().await;
+}
+
+#[tokio::test]
+async fn denied_secret_request_creates_neither_token_nor_shell() {
+    let (state, _) = desktop_state(Choice::Deny, false);
+    state
+        .put_secret("JENKINS_CI_TOKEN", "fixture-only")
+        .await
+        .unwrap();
+    let result = state
+        .enter_interactive_with_secrets(
+            "agent",
+            "exact <reason>\nsecond line",
+            &["JENKINS_CI_TOKEN".into()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "denied");
+    assert!(state.auth.lock().await.list().is_empty());
+    assert!(state.sessions.lock().await.by_handle.is_empty());
+}
+
+#[tokio::test]
 async fn paired_privileged_front_door_runs_ordinary_commands_only_in_user_shell() {
     let root_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let user_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -164,7 +254,45 @@ async fn paired_privileged_front_door_runs_ordinary_commands_only_in_user_shell(
         tokio::spawn(async move { axum::serve(root_listener, root_app).await.unwrap() });
     let user_server =
         tokio::spawn(async move { axum::serve(user_listener, user_app).await.unwrap() });
-    let entered = root.enter(&token).await.unwrap();
+    user.put_secret("TEST_SHARED_SECRET", "fixture-shared-snapshot")
+        .await
+        .unwrap();
+    assert_eq!(
+        root.secret_keys().await.unwrap(),
+        user.secret_keys().await.unwrap()
+    );
+    root.put_secret("TEST_SECOND_SECRET", "fixture-second")
+        .await
+        .unwrap();
+    assert!(
+        user.secret_keys()
+            .await
+            .unwrap()
+            .contains(&"TEST_SECOND_SECRET".into())
+    );
+    let entered = root
+        .enter_with_secrets(&token, &["TEST_SHARED_SECRET".into()])
+        .await
+        .unwrap();
+    // Rotate before lazily attaching the ordinary-user shell: every identity
+    // must still inherit the original authorization's snapshot.
+    user.put_secret("TEST_SHARED_SECRET", "rotated-after-enter")
+        .await
+        .unwrap();
+    for sudo in [true, false] {
+        let command = if cfg!(windows) {
+            "[Console]::Write($env:TEST_SHARED_SECRET)"
+        } else {
+            "printf '%s' \"$TEST_SHARED_SECRET\""
+        };
+        assert_eq!(
+            root.run(&entered.handle, command, sudo, None)
+                .await
+                .unwrap()
+                .stdout,
+            "fixture-shared-snapshot"
+        );
+    }
     for (sudo, marker) in [(true, "root-marker"), (false, "user-marker")] {
         let command = if cfg!(windows) {
             format!("$marker='{marker}'; $marker")

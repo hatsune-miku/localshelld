@@ -148,7 +148,14 @@ fn create_window(
 ) -> Result<ConsentWindow> {
     let window = WindowBuilder::new()
         .with_title("本机命令授权 — localshelld")
-        .with_inner_size(LogicalSize::new(640.0, 660.0))
+        .with_inner_size(LogicalSize::new(
+            640.0,
+            if prompt.secret_keys.is_empty() {
+                660.0
+            } else {
+                780.0
+            },
+        ))
         .with_min_inner_size(LogicalSize::new(420.0, 500.0))
         .with_visible(false)
         .build(target)

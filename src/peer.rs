@@ -4,7 +4,11 @@ use std::{net::SocketAddr, time::Duration};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use crate::{server::ApiError, shell::ExecutionResult};
+use crate::{
+    execution::{PrivilegeLevel, RunOptions, execution_argument},
+    server::ApiError,
+    shell::ExecutionResult,
+};
 
 #[derive(Clone)]
 pub(crate) struct Peer {
@@ -18,6 +22,19 @@ pub(crate) struct Entered {
     pub handle: String,
     pub expires_at: Option<i64>,
     pub daemon: String,
+    #[serde(default)]
+    pub identities: std::collections::BTreeMap<String, Value>,
+    #[serde(default)]
+    pub secret_keys: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Inspection {
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub identities: std::collections::BTreeMap<String, Value>,
+    #[serde(default)]
+    pub secret_keys: Vec<String>,
 }
 
 impl Peer {
@@ -36,7 +53,7 @@ impl Peer {
         Ok(Self {
             client,
             base: format!("http://{address}"),
-            response_limit: max_output.saturating_mul(6).saturating_add(8192),
+            response_limit: max_output.saturating_mul(32).saturating_add(65_536),
         })
     }
 
@@ -66,23 +83,34 @@ impl Peer {
             bytes.extend_from_slice(&chunk);
         }
         if !status.is_success() {
-            return Err(ApiError::peer(status));
+            let message = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|value| value["error"].as_str().map(str::to_owned));
+            return Err(message.map_or_else(
+                || ApiError::peer(status),
+                |message| ApiError::with_status(status.as_u16(), message),
+            ));
         }
         serde_json::from_slice(&bytes)
             .map_err(|_| ApiError::unavailable("invalid privileged daemon response"))
     }
 
-    pub async fn enter(&self, token: &str) -> Result<Entered, ApiError> {
+    pub async fn enter(&self, token: &str, secret_keys: &[String]) -> Result<Entered, ApiError> {
         let entered: Entered = self
             .post(
                 "/v1/sessions/enter",
-                json!({"token": token}),
+                json!({"token": token, "secret_keys":secret_keys}),
                 Some(Duration::from_secs(5)),
             )
             .await?;
         if entered.daemon != "privileged" {
             return Err(ApiError::bad_request(
                 "upstream must be a privileged daemon",
+            ));
+        }
+        if !secret_keys.is_empty() && entered.secret_keys != secret_keys {
+            return Err(ApiError::unavailable(
+                "privileged daemon did not authorize the requested secret keys; upgrade both daemons to the same version",
             ));
         }
         Ok(entered)
@@ -92,14 +120,12 @@ impl Peer {
         &self,
         handle: &str,
         command: &str,
-        timeout: Option<u64>,
+        level: PrivilegeLevel,
+        options: &RunOptions,
     ) -> Result<ExecutionResult, ApiError> {
-        self.post(
-            "/v1/commands/run",
-            json!({"handle": handle, "command": command, "sudo": true, "timeout_seconds": timeout}),
-            None,
-        )
-        .await
+        let mut body = execution_argument(level);
+        body.as_object_mut().unwrap().extend(json!({"handle":handle,"command":command,"stdin":options.stdin,"timeout_seconds":options.timeout_seconds}).as_object().unwrap().clone());
+        self.post("/v1/commands/run", body, None).await
     }
 
     pub async fn validate(&self, handle: &str, watch: bool) -> Result<(), ApiError> {
@@ -118,19 +144,15 @@ impl Peer {
         Ok(())
     }
 
-    pub async fn inspect(&self, handle: &str) -> Result<Option<i64>, ApiError> {
-        #[derive(Deserialize)]
-        struct Validation {
-            expires_at: Option<i64>,
-        }
-        let result: Validation = self
+    pub async fn inspect(&self, handle: &str) -> Result<Inspection, ApiError> {
+        let result: Inspection = self
             .post(
                 "/v1/sessions/validate",
                 json!({"handle":handle}),
                 Some(Duration::from_secs(5)),
             )
             .await?;
-        Ok(result.expires_at)
+        Ok(result)
     }
 
     pub async fn destroy(&self, handle: &str) -> Result<(), ApiError> {

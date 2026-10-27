@@ -6,7 +6,7 @@ description = "User-controlled local and privileged PowerShell and Bash sessions
 license = "MIT"
 
 [workspace]
-members = ["crates/native-dialog"]
+members = ["crates/native-dialog", "crates/native-process"]
 
 [dependencies]
 aes-gcm = "0.10"
@@ -50,6 +50,7 @@ gtk = "0.18"
 windows-service = "0.8"
 openssl = { version = "0.10", features = ["vendored"] }
 localshelld-native-dialog = { path = "crates/native-dialog" }
+localshelld-native-process = { path = "crates/native-process" }
 
 [target.'cfg(not(windows))'.dependencies]
 wry = "0.54"

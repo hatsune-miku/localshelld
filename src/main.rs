@@ -55,7 +55,7 @@ enum CommandKind {
     },
     /// Run the system or current-user HTTP/MCP daemon.
     Serve {
-        /// Run as the current non-elevated user, routing sudo=true to the system daemon.
+        /// Run as the current non-elevated user, routing elevated execution to the system daemon.
         #[arg(long, conflicts_with = "allow_unelevated")]
         user: bool,
         #[arg(long)]

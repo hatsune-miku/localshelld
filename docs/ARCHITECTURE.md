@@ -26,7 +26,9 @@ Axum transport ── admin authentication ── Argon2id / RFC 6238
 
 同一二进制以两个身份独立运行：系统 daemon 使用原有 SCM/systemd/LaunchDaemon；`serve --user` 使用当前非高权限账户，安装为用户登录自启动项。用户 daemon 必须通过进程身份检查，拒绝 root/管理员，不能与 `--allow-unelevated` 合用。默认端口分别为 32119 和 32120，配置目录、Master/TOTP 和签发令牌相互独立。
 
-MCP 入口推荐用户 daemon，工具统一为 `localshelld_*`。`localshelld_run.sudo` 是必填 bool：false 路由至用户 shell；true 只允许持有高权限授权的会话转发给系统 daemon。系统入口也支持 false，但必须先显式配对用户 daemon，再通过认证加密桥转发。用户态令牌不能用于 true。每种身份拥有独立的 shell 状态，不复制环境、变量或目录，也没有身份回退。
+MCP 入口推荐用户 daemon，工具名为 `secrets_list`、`enter_interactive`、`enter_preauthorized`、`run`、`destroy`、`revoke`。Windows `run.privilege_level` 必填，三选一：`current-user`、`as-administrator`、`nt-authority/system`；Linux/macOS 保持必填 boolean `sudo`。普通用户执行路由至用户 daemon，高权限执行须持有系统授权。每种身份拥有独立的 shell 状态，不复制已有 shell 的变量或目录，不自动回退。
+
+Windows 的管理员后端使用配对用户进程的 linked elevated token，校验进程创建时间、SID、登录 session 及令牌属性，保证管理员与当前用户是同一个账户；不以 SYSTEM 修改环境变量冒充。通过配对加密桥取得用户环境和 cwd，保留用户 USERPROFILE、真实 HKCU 和用户 PATH。为重定向管道继承，在 broker 的非交互 session 内运行，不保证交互桌面或映射网络驱动器。PowerShell 仍使用 `-NoProfile`，不自动执行 profile 脚本。无 linked token 或 OS 权限不足时明确失败。SYSTEM 选项只允许真实 LocalSystem。
 
 用户态令牌独立验证，系统 daemon 不在线仍可运行普通命令。用户提交系统 daemon 的令牌时，用户 daemon 先向签发端 enter，再创建用户 shell、独立 handle 和内存映射，只保留上游 handle；不会读取或转交 Master Password/TOTP。控制请求限制 5 秒，长轮询限制 20 秒，禁止代理和重定向，目标限定为 loopback SocketAddr，响应读取有大小上限。命令转发不默认限时、不重试。
 
@@ -37,7 +39,7 @@ MCP 入口推荐用户 daemon，工具统一为 `localshelld_*`。`localshelld_r
 ### 授权与显示分层
 
 - `auth`：Master/TOTP、运行期执行令牌；`management`：10 分钟管理会话、WebAuthn 和凭据设置。
-- `settings` / `storage`：原子、受 ACL 保护的配置写入，以及独立的 `config.authorization.json`。后者保存配对共享密钥、通行密钥公钥/元数据、用户 UUID 和记住的选择；备份或迁移时需同时保留它、原配置和 seal key。
+- `settings` / `storage`：原子、受 ACL 保护的配置写入，以及独立的 `config.authorization.json`。后者保存配对共享密钥、通行密钥公钥/元数据、用户 UUID、记住的选择及 key 范围、加密后的环境变量凭据；备份或迁移时需同时保留它、原配置和 seal key。
 - `consent`：最多 8 个 pending 请求、60 秒截止时间、取消清理与进程内一次性决策回调；`server` 统一决定权限与创建会话。
 - `desktop`：平台适配。Windows 的 `crates/native-dialog` 封装 Win32 FFI；应用主库继续禁止 unsafe。模型无关的窗口层只接收文字和完成回调，不知道 token、shell 或提权接口。Linux/macOS 保留 Tao/Wry 实现。
 - `bridge`：显式配对后使用 AES-256-GCM 信封，绑定角色、方向、请求 ID，限制请求年龄并阻止重放。控制请求有短超时，授权请求遵循 60 秒截止时间，命令不默认限时、不重试。
@@ -56,13 +58,17 @@ Windows 使用模型无关的原生无模式对话框，`IsDialogMessageW` 负�
 
 不自行解析或重写用户命令。Windows 启动 `pwsh -NoProfile -NonInteractive -EncodedCommand` bootstrap，命令通过 UTF-8→Base64 编码传输，由 `[ScriptBlock]::Create` 原生解析并在当前作用域执行。Unix 启动 `/bin/bash --noprofile --norc -c` bootstrap，移除 `BASH_ENV` 等启动变量；命令按字节编码传输（可打印 ASCII 直传、其余转义为八进制），由 Bash 内建 `printf -v` 无外部依赖地还原，再在父 shell 中 `eval`，不使用丢失状态的命令替换或子 shell。因变量无法承载 NUL，含 NUL 的命令在入口即被拒绝，不会静默截断。
 
-bootstrap 用 `builtin read`/`printf`/`eval` 读取协议，命令即便重定义同名函数也不影响读循环；命令的 stdout/stderr 经一个私有的原始 stdout 副本（fd 4）传出，完成帧也走 fd 4，因此命令内的 `exec >…` 只改写自身 fd 1、不会静音后续命令，也无法伪造或破坏帧。
+Bash bootstrap 用 `builtin read`/`printf`/`eval` 读取协议，命令即便重定义同名函数也不影响读循环。协议输入 fd 3、stdout 帧 fd 4、stderr 帧 fd 5 与命令输入分离；命令内的 `exec >…` 不会静音后续命令。单次 `stdin` 保存在私有临时文件中供命令读取到 EOF，允许 UTF-8 字节中的 NUL；完成或中断后清理。PowerShell 保存独立的控制 reader，执行期间同时切换 Win32 标准输入 handle 与 `Console.In`，完成后恢复。
 
-随机 144-bit marker 和控制字符将每个请求的完成帧定界；原始输出通过管道持续读取，仅保存配置容量内的部分，并在截断后继续排空。PowerShell 对象使用 `Out-String -Stream` 转成文本。handle 自身为独立的 256-bit 随机秘密。
+随机 144-bit marker 和控制字符将每个请求在 stdout/stderr 上的完成帧定界；并行读取两个管道，各自最多保存 `max_output_bytes` 字节，截断后继续排空。PowerShell 对象转为文本，error 流进入 stderr，其它逻辑流不单独建模。结果提供 stdout、stderr、真实 identity、cwd、duration_ms、退出/超时/会话状态，兼容 output 是 stdout 后接 stderr，不保证交错时间顺序。handle 是独立的 256-bit 随机秘密。
 
 这比“每次调用启动一个 shell”多一些 framing 复杂度，但保留了变量、环境和当前目录，符合会话语义。比自行实现 shell grammar 可靠得多。命令本身拥有 root 权限，因此刻意伪造 framing 不构成额外权限提升。
 
-每个会话由独立 worker 持有进程和输入输出，队列串行执行命令；取消信号不依赖执行锁，因此无限时命令也可以被销毁、撤销或服务关闭中断。读循环同时监听 shell 进程退出，因此 shell 因 `exit`/`exec`/`set -e` 失败而退出、或后台任务仍占着输出管道时，本次调用不会挂起，而是返回已产生的输出与 shell 的实际退出码并标记 `session_ended`。Unix 下 shell 以 `process_group(0)` 独占进程组，中断时对整个进程组发 `SIGKILL`（通过安全的 `rustix`，不引入 `unsafe`），回收命令启动的子进程；进程组 id 在 spawn 时记录，即使先回收 leader 取退出码也能可靠发信号。HTTP 调用方断开后，worker 仍消费完整响应，避免后续命令串包。服务关闭时拒绝新会话并取消全部已有会话，再等待 HTTP 请求退出。
+每种身份的 shell 由独立 worker 持有进程和输入输出，队列串行执行命令；取消信号不依赖执行锁，因此无限时命令也可以被销毁、撤销或服务关闭中断。读循环同时监听 shell 退出，`exit`/`exec`/`set -e` 结束 shell 时返回部分输出与实际退出码，并结束整个 handle。普通命令非零退出码不结束 shell。
+
+Windows `crates/native-process` 隔离进程相关 FFI，主库继续禁止 unsafe。创建 shell 时使用显式标准句柄继承列表，在 suspended 状态加入禁止 breakaway 的 kill-on-close Job Object 后才恢复执行；销毁时终止整个 Job，覆盖子孙进程。Unix 记录独立进程组，清理时先枚举仍可识别的后代、从叶子向上终止，再对原始进程组发 SIGKILL；已经 double-fork 并重新托管的 daemon 不保证回收。
+
+HTTP 调用方断开不自动取消命令；执行与清理生命周期继续，避免后续串包和遗漏超时清理。显式执行超时或取消销毁整个 handle 的所有身份 shell，返回部分 stdout/stderr、`exit_code:null`、结束原因，不承诺保留状态。MCP initialize 签发随机 `Mcp-Session-Id`，run 的取消通知按该客户端 capability 与 requestId 定位，不能仅凭 requestId 跨客户端取消。服务关闭先拒绝新会话、取消已有会话，再等待 HTTP 请求退出。此内部生命周期不是后台任务系统；没有任务 ID、轮询或持续输入 API。
 
 默认不设命令或会话运行时长上限，删除 `max_command_seconds` 配置；调用方仍可显式指定正整数 `timeout_seconds`。单 daemon 令牌有效期只对授权及后续调用做检查；双权限会话的 watch 会在高权限授权到期时取消两端 shell。旧 Unix 默认 `shell = "pwsh"` 在加载配置时迁移为 `/bin/bash`，旧自定义路径需手动修改。
 
@@ -73,6 +79,12 @@ bootstrap 用 `builtin read`/`printf`/`eval` 读取协议，命令即便重定�
 ### 凭据存储
 
 Master Password 只保存 Argon2id PHC verifier。TOTP 验证使用可恢复的共享 secret，以 AES-256-GCM 加密存储，seal key 单独保存并使用操作系统 ACL/文件权限管理访问。
+
+环境变量凭据由 `secrets` 管理，key 必须为可移植的大写环境变量名，value 同样用 AES-256-GCM 加密后写入 `config.authorization.json`，复用独立 `seal.key`。管理页支持写入、更换、删除，读取接口只返回名称。配对后以桌面用户 daemon 为凭据库，两端后台经认证加密桥操作同一份数据；未配对时使用各自独立库，不自动迁移。
+
+`enter.secret_keys` 选择本次需要的凭据，复用原有 token / 交互授权。用户同意后在 session 中保留不可变的环境快照，各身份 shell 创建时直接覆盖对应子进程环境，不在命令文本、参数或日志中插值。Windows 按不区分大小写的名称替换继承项；管理员后端先取得同用户 profile 环境，再应用所选凭据。惰性创建的用户/管理员 shell 也使用原快照，不重新读取已轮换的值。内部 `SessionEnvironment` 仅在配对加密桥上、验证有效 handle 后返回快照，不作为公开 secret 工具。
+
+记忆允许另外记录曾确认的 key 范围，新增 key 必须再次显示授权窗口；没有新增 token 类别。公开 secret 工具只有 `secrets_list`。列表和 enter 响应不含 value，但注入不是针对 shell 本身的保密边界：获授权的命令仍可读取并输出环境。删除后台凭据不清理已有进程环境，终止已有委托应销毁会话或撤销其 token。
 
 ### 本机传输
 
@@ -90,23 +102,23 @@ HTTP/MCP 使用本机 loopback，配置验证限制 bind 和 daemon 间通信目
 
 | 原始需求 | 实现 |
 |---|---|
-| Windows Administrator / Linux/macOS root | 启动身份检查；SCM LocalSystem / systemd root / launchd root |
+| Windows Administrator / SYSTEM / Unix root | 同用户 linked elevated token / SCM LocalSystem / systemd 与 launchd root |
 | 普通用户执行 | 独立用户 daemon、非高权限身份检查、用户登录自启动 |
-| 显式选择执行权限 | localshelld_run.sudo、独立 shell 状态、无自动提权或回退 |
+| 显式选择执行权限 | Windows 三态 privilege_level；Unix boolean sudo；独立状态、无身份回退 |
 | 每次运行令牌自然失效 | opaque token 元数据只保存在进程内存中 |
 | 用户亲自签发 token | 本地 UI + Argon2id Master / TOTP |
 | 默认 24h、可永久 | issue API 和 UI presets |
 | 一个 token 一个 session | 双向 token-id/handle map，明确 reused 响应 |
 | handle 是强密码 | CSPRNG 256 bit base64url |
 | 平台原生 shell 语义 | 持久化 `pwsh` 或 Bash 原生解析，平台集成测试 |
-| 销毁 session/token | 立即移除映射并 kill shell；撤销级联 |
+| 销毁 session/token | 立即移除映射并清理所有关联 shell 进程树；撤销级联 |
 | HTTP + MCP | Axum JSON API + MCP JSON-RPC Streamable HTTP |
 | MCP shell 识别 | 平台相关说明与 enter 的 shell/platform 字段 |
 | 多平台二进制 CI | Windows/Linux/macOS ARM64 与 x86_64 matrix + release artifacts |
 
 ## 运行特性
 
-- 当前输出为有大小上限的聚合响应，不支持 stdin 交互或实时流；长时间任务可运行至完成，但 HTTP/MCP 客户端可能有自己的超时。
+- 输出是分别限额的 stdout/stderr 聚合响应，支持单次 stdin + EOF，不提供实时流、PTY 或后续输入。命令可运行至完成，客户端有独立超时；长任务管理由 harness 负责，不新增任务系统。
 - Windows、Linux、macOS 服务安装路径均指向当前二进制；升级时应先停止服务并替换已安装位置。macOS 使用 `/Library/LaunchDaemons/dev.localshelld.plist`，`bootstrap system` 安装，`bootout` 卸载；配置和 seal key 保留。
-- 取消会话向 shell 进程组发 `SIGKILL`，回收命令启动的普通子进程和后台任务，但主动 `setsid`/新建进程组脱离者或已 daemon 化的进程仍可能存活；这不是进程容器或作业调度器。命令若刻意改写协议内部使用的 `__localshelld_`-前缀变量，只会破坏其自身会话（该会话以 root 运行，不构成额外提权）。
+- Windows 使用 Job Object 清理进程树，Unix 清理可追踪后代和原始进程组。主动彻底脱离的 Unix daemon 不在回收保证内，这不是容器或作业调度器。刻意改写 `__localshelld_` 内部变量只会破坏自身会话，不构成额外提权。
 - 日志不记录命令和凭据，用户的任务内容保留在会话中。

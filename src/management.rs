@@ -122,6 +122,9 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/admin/login", post(login))
         .route("/v1/admin/logout", post(logout))
         .route("/v1/admin/settings", get(settings))
+        .route("/v1/admin/secrets", get(secrets))
+        .route("/v1/admin/secrets/put", post(secret_put))
+        .route("/v1/admin/secrets/remove", post(secret_remove))
         .route("/v1/admin/password", post(password))
         .route("/v1/admin/totp/start", post(totp_start))
         .route("/v1/admin/totp/finish", post(totp_finish))
@@ -141,6 +144,47 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/admin/pairing/connect", post(pairing_connect))
         .route("/v1/admin/pairing/remove", post(pairing_remove))
         .route("/v1/admin/remembered/reset", post(remembered_reset))
+}
+
+async fn secrets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    owner(&state, &headers).await?;
+    Ok(Json(json!({"keys":state.secret_keys().await?})))
+}
+
+#[derive(Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+struct SecretPut {
+    key: String,
+    value: String,
+}
+
+async fn secret_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SecretPut>,
+) -> Result<Json<Value>, ApiError> {
+    owner(&state, &headers).await?;
+    state.put_secret(&body.key, &body.value).await?;
+    Ok(Json(json!({"saved":true})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretKey {
+    key: String,
+}
+
+async fn secret_remove(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SecretKey>,
+) -> Result<Json<Value>, ApiError> {
+    owner(&state, &headers).await?;
+    state.remove_secret(&body.key).await?;
+    Ok(Json(json!({"removed":true})))
 }
 
 #[derive(Deserialize)]
@@ -553,6 +597,7 @@ async fn remembered_reset(
     let count = settings.saved.remembered.len();
     let mut next = settings.saved.clone();
     next.remembered.clear();
+    next.remembered_secrets.clear();
     settings.save(next).await?;
     Ok(Json(json!({"cleared":count})))
 }

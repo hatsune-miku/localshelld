@@ -1,14 +1,11 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{fmt::Write as _, process::Stdio, time::Duration};
+use std::fmt::Write as _;
 use thiserror::Error;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{mpsc, oneshot, watch},
-    time::{Instant, timeout_at},
-};
+use tokio::sync::{mpsc, oneshot, watch};
+
+mod transport;
+use crate::execution::RunOptions;
+use transport::Process;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -40,10 +37,21 @@ impl ShellKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionResult {
+    /// Compatibility text; stdout followed by stderr, not interleaving order.
     pub output: String,
-    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
     pub success: bool,
     pub truncated: bool,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub duration_ms: u64,
+    pub timed_out: bool,
+    pub session_alive: bool,
+    pub session_ended_reason: Option<String>,
+    pub cwd: Option<String>,
+    pub identity: serde_json::Value,
     /// The shell exited while running or right after this command (for example
     /// `exit`, `exec`, or a failure under `set -e`). The captured output and the
     /// shell's own exit code are still returned, but the session is now gone and
@@ -61,15 +69,13 @@ pub enum ShellError {
     Io(#[source] std::io::Error),
     #[error("shell returned an invalid response")]
     InvalidResponse,
-    #[error("command exceeded the {0}-second timeout; the session was destroyed")]
-    Timeout(u64),
     #[error("command rejected: {0}")]
     Rejected(&'static str),
 }
 
 struct Request {
     command: String,
-    timeout_seconds: Option<u64>,
+    options: RunOptions,
     reply: oneshot::Sender<Result<ExecutionResult, ShellError>>,
 }
 
@@ -79,17 +85,62 @@ pub struct Shell {
     requests: mpsc::Sender<Request>,
     cancel: watch::Sender<bool>,
     finished: watch::Receiver<bool>,
+    identity: serde_json::Value,
 }
 impl Shell {
     pub async fn spawn(executable: &str, max_output_bytes: usize) -> Result<Self, ShellError> {
         Self::spawn_kind(ShellKind::native(), executable, max_output_bytes).await
+    }
+    pub async fn spawn_with_environment(
+        executable: &str,
+        max_output_bytes: usize,
+        environment: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self, ShellError> {
+        Self::from_process(Process::spawn(
+            ShellKind::native(),
+            executable,
+            max_output_bytes,
+            environment,
+        )?)
     }
     async fn spawn_kind(
         kind: ShellKind,
         executable: &str,
         max_output_bytes: usize,
     ) -> Result<Self, ShellError> {
-        let mut process = Process::spawn(kind, executable, max_output_bytes)?;
+        let process = Process::spawn(kind, executable, max_output_bytes, &Default::default())?;
+        Self::from_process(process)
+    }
+    #[cfg(windows)]
+    pub async fn spawn_administrator(
+        executable: &str,
+        max_output_bytes: usize,
+        context: &localshelld_native_process::UserContext,
+    ) -> Result<Self, ShellError> {
+        Self::spawn_administrator_with_environment(
+            executable,
+            max_output_bytes,
+            context,
+            &Default::default(),
+        )
+        .await
+    }
+    #[cfg(windows)]
+    pub async fn spawn_administrator_with_environment(
+        executable: &str,
+        max_output_bytes: usize,
+        context: &localshelld_native_process::UserContext,
+        environment: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self, ShellError> {
+        Self::from_process(Process::spawn_administrator(
+            executable,
+            max_output_bytes,
+            context,
+            environment,
+        )?)
+    }
+    fn from_process(mut process: Process) -> Result<Self, ShellError> {
+        let identity = process.identity.clone();
         let (requests, mut receiver) = mpsc::channel::<Request>(16);
         let (cancel, mut cancelled) = watch::channel(false);
         let (done, finished) = watch::channel(false);
@@ -101,11 +152,9 @@ impl Shell {
                     _ = process.child.wait() => break,
                     request = receiver.recv() => match request { Some(r) => r, None => break },
                 };
-                let result = tokio::select! {
-                    biased;
-                    _ = cancelled.changed() => Err(ShellError::Ended),
-                    result = process.execute(&request.command, request.timeout_seconds) => result,
-                };
+                let result = process
+                    .execute(&request.command, &request.options, &mut cancelled)
+                    .await;
                 // Any error, or a shell that exited during the command, ends the
                 // session; its children are reaped before the next caller runs.
                 let ended = match &result {
@@ -127,12 +176,30 @@ impl Shell {
             requests,
             cancel,
             finished,
+            identity,
         })
+    }
+    pub fn identity(&self) -> &serde_json::Value {
+        &self.identity
     }
     pub async fn execute(
         &self,
         command: &str,
         timeout_seconds: Option<u64>,
+    ) -> Result<ExecutionResult, ShellError> {
+        self.execute_with_options(
+            command,
+            RunOptions {
+                timeout_seconds,
+                ..RunOptions::default()
+            },
+        )
+        .await
+    }
+    pub async fn execute_with_options(
+        &self,
+        command: &str,
+        options: RunOptions,
     ) -> Result<ExecutionResult, ShellError> {
         if command.as_bytes().contains(&0) {
             // A NUL cannot survive transport through the shell's own string
@@ -146,7 +213,7 @@ impl Shell {
         self.requests
             .send(Request {
                 command: command.to_owned(),
-                timeout_seconds,
+                options,
                 reply,
             })
             .await
@@ -174,239 +241,6 @@ impl Drop for Shell {
     }
 }
 
-struct Process {
-    kind: ShellKind,
-    child: Child,
-    stdin: ChildStdin,
-    stdout: ChildStdout,
-    pending: Vec<u8>,
-    max_output_bytes: usize,
-    /// The shell's process-group id, captured at spawn so the group can still be
-    /// signalled after the leader has been reaped for its exit code. While a
-    /// child of the group is alive the kernel keeps this id reserved, so it never
-    /// aliases an unrelated process.
-    #[cfg(unix)]
-    pgid: Option<i32>,
-}
-impl Process {
-    fn spawn(
-        kind: ShellKind,
-        executable: &str,
-        max_output_bytes: usize,
-    ) -> Result<Self, ShellError> {
-        let mut command = Command::from(crate::process::background_command(executable));
-        match kind {
-            ShellKind::PowerShell => {
-                let bytes: Vec<u8> = include_str!("shell/powershell.ps1")
-                    .encode_utf16()
-                    .flat_map(u16::to_le_bytes)
-                    .collect();
-                command.args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-EncodedCommand",
-                    &STANDARD.encode(bytes),
-                ]);
-            }
-            ShellKind::Bash => {
-                command.args(["--noprofile", "--norc", "-c", include_str!("shell/bash.sh")]);
-                // --norc alone does not suppress noninteractive startup via BASH_ENV.
-                for name in ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH"] {
-                    command.env_remove(name);
-                }
-                // Put the shell in its own process group so a timeout, destroy or
-                // revoke can signal the whole group, reaping children the command
-                // launched, not just the shell itself.
-                #[cfg(unix)]
-                command.process_group(0);
-            }
-        }
-        let mut child = command
-            // An updater must run outside the service's own process tree.
-            .env("LOCALSHELLD_SESSION", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(ShellError::Start)?;
-        let stdin = child.stdin.take().ok_or(ShellError::Ended)?;
-        let stdout = child.stdout.take().ok_or(ShellError::Ended)?;
-        Ok(Self {
-            kind,
-            // process_group(0) makes the pgid equal the shell's own pid.
-            #[cfg(unix)]
-            pgid: child.id().map(|pid| pid as i32),
-            child,
-            stdin,
-            stdout,
-            pending: Vec::new(),
-            max_output_bytes,
-        })
-    }
-    async fn execute(
-        &mut self,
-        command: &str,
-        seconds: Option<u64>,
-    ) -> Result<ExecutionResult, ShellError> {
-        // Avoid clock overflow for very large caller-supplied durations.
-        match seconds.and_then(|s| Instant::now().checked_add(Duration::from_secs(s))) {
-            Some(deadline) => timeout_at(deadline, self.execute_inner(command))
-                .await
-                .map_err(|_| ShellError::Timeout(seconds.unwrap()))?,
-            None => self.execute_inner(command).await,
-        }
-    }
-    async fn execute_inner(&mut self, command: &str) -> Result<ExecutionResult, ShellError> {
-        if self.child.try_wait().map_err(ShellError::Io)?.is_some() {
-            return Err(ShellError::Ended);
-        }
-        let mut random = [0_u8; 18];
-        OsRng.fill_bytes(&mut random);
-        let marker = STANDARD.encode(random);
-        let encoded = match self.kind {
-            ShellKind::PowerShell => STANDARD.encode(command.as_bytes()),
-            ShellKind::Bash => encode_bash_command(command),
-        };
-        self.stdin
-            .write_all(format!("{marker}|{encoded}\n").as_bytes())
-            .await
-            .map_err(ShellError::Io)?;
-        self.stdin.flush().await.map_err(ShellError::Io)?;
-        let needle = format!("\u{001e}{marker}|").into_bytes();
-        let mut output = Vec::new();
-        let mut truncated = false;
-        loop {
-            if let Some(start) = self.pending.windows(needle.len()).position(|w| w == needle) {
-                append_output(
-                    &mut output,
-                    &self.pending[..start],
-                    self.max_output_bytes,
-                    &mut truncated,
-                );
-                self.pending.drain(..start + needle.len());
-                loop {
-                    if let Some(end) = self.pending.iter().position(|b| *b == 0x1f) {
-                        let exit_code: i32 = std::str::from_utf8(&self.pending[..end])
-                            .map_err(|_| ShellError::InvalidResponse)?
-                            .parse()
-                            .map_err(|_| ShellError::InvalidResponse)?;
-                        self.pending.drain(..=end);
-                        return Ok(ExecutionResult {
-                            output: String::from_utf8_lossy(&output).into_owned(),
-                            exit_code,
-                            success: exit_code == 0,
-                            truncated,
-                            session_ended: false,
-                        });
-                    }
-                    if self.pending.len() > 12 {
-                        return Err(ShellError::InvalidResponse);
-                    }
-                    if let Fill::ShellExited = self.fill().await? {
-                        // The frame began but its exit-code terminator never
-                        // arrived; the shell died mid-frame. Return what we have.
-                        return Ok(self.ended_result(output, truncated).await);
-                    }
-                }
-            }
-            // Retain only a possible partial delimiter. Drain excess output even
-            // after truncation so the next command starts at a frame boundary.
-            let count = self.pending.len().saturating_sub(needle.len() - 1);
-            append_output(
-                &mut output,
-                &self.pending[..count],
-                self.max_output_bytes,
-                &mut truncated,
-            );
-            self.pending.drain(..count);
-            if let Fill::ShellExited = self.fill().await? {
-                // The shell exited without completing this command (exit, exec,
-                // a failure under set -e, ...). Whatever it had buffered is real
-                // output; flush it and report the shell's own exit code.
-                append_output(
-                    &mut output,
-                    &self.pending,
-                    self.max_output_bytes,
-                    &mut truncated,
-                );
-                self.pending.clear();
-                return Ok(self.ended_result(output, truncated).await);
-            }
-        }
-    }
-    /// Read more shell output, or observe that the shell process has exited.
-    /// Selecting on the child means a lingering background job holding the pipe
-    /// open cannot stall a command whose shell has already gone.
-    async fn fill(&mut self) -> Result<Fill, ShellError> {
-        let mut bytes = [0_u8; 8192];
-        let Self {
-            child,
-            stdout,
-            pending,
-            ..
-        } = self;
-        let count = tokio::select! {
-            biased;
-            read = stdout.read(&mut bytes) => read.map_err(ShellError::Io)?,
-            _ = child.wait() => return Ok(Fill::ShellExited),
-        };
-        if count == 0 {
-            return Ok(Fill::ShellExited);
-        }
-        pending.extend_from_slice(&bytes[..count]);
-        Ok(Fill::Data)
-    }
-    async fn ended_result(&mut self, output: Vec<u8>, truncated: bool) -> ExecutionResult {
-        let exit_code = self.shell_exit_code().await;
-        ExecutionResult {
-            output: String::from_utf8_lossy(&output).into_owned(),
-            exit_code,
-            success: exit_code == 0,
-            truncated,
-            session_ended: true,
-        }
-    }
-    async fn shell_exit_code(&mut self) -> i32 {
-        match self.child.wait().await {
-            Ok(status) => status.code().unwrap_or({
-                #[cfg(unix)]
-                {
-                    use std::os::unix::process::ExitStatusExt;
-                    status.signal().map_or(-1, |signal| 128 + signal)
-                }
-                #[cfg(not(unix))]
-                {
-                    -1
-                }
-            }),
-            Err(_) => -1,
-        }
-    }
-    async fn terminate(&mut self) {
-        // Kill the whole process group first so children the command spawned die
-        // with the shell; then reap the shell itself.
-        #[cfg(unix)]
-        self.kill_process_group();
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
-    }
-    #[cfg(unix)]
-    fn kill_process_group(&self) {
-        use rustix::process::{Pid, Signal, kill_process_group};
-        // Use the pgid captured at spawn, not child.id(): by teardown the leader
-        // may already be reaped, but stragglers it launched can still be running.
-        if let Some(pid) = self.pgid.and_then(Pid::from_raw) {
-            let _ = kill_process_group(pid, Signal::KILL); // best effort
-        }
-    }
-}
-enum Fill {
-    Data,
-    ShellExited,
-}
-
 /// Reconstructed by Bash's `printf %b`. Escape both the decoding escape character
 /// and the `read` field separator: an unescaped trailing `|` would be discarded.
 fn encode_bash_command(command: &str) -> String {
@@ -430,7 +264,10 @@ fn append_output(output: &mut Vec<u8>, bytes: &[u8], limit: usize, truncated: &m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::{process::Stdio, sync::Arc, time::Duration};
+    use tokio::process::Command;
+    #[cfg(unix)]
+    use tokio::time::Instant;
 
     #[test]
     fn bash_encoding_escapes_protocol_separators_and_preserves_plain_ascii() {
@@ -480,6 +317,39 @@ mod tests {
             )
             .await;
             assert_eq!(result.output.trim(), "1");
+            shell.terminate().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn credential_environment_is_data_not_source_and_reaches_child_programs() {
+        use base64::Engine as _;
+        let value = "fixture-only ' \" $ ` ; &\nUnicode: 密码";
+        let environment =
+            std::collections::BTreeMap::from([("TEST_SECRET_VALUE".into(), value.into())]);
+        for (kind, path) in backends() {
+            let shell =
+                Shell::from_process(Process::spawn(kind, &path, 64 * 1024, &environment).unwrap())
+                    .unwrap();
+            let result = run(
+                &shell,
+                source(
+                    kind,
+                    "[Console]::Write($env:TEST_SECRET_VALUE)",
+                    "printf '%s' \"$TEST_SECRET_VALUE\"",
+                ),
+            )
+            .await;
+            assert_eq!(result.stdout, value, "{kind:?}");
+            let child = run(&shell, source(kind,
+                "pwsh -NoProfile -NonInteractive -Command '[Console]::Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:TEST_SECRET_VALUE)))'",
+                "/bin/bash --noprofile --norc -c 'printf %s \"$TEST_SECRET_VALUE\" | base64'"
+            )).await;
+            assert_eq!(
+                child.stdout.trim(),
+                base64::engine::general_purpose::STANDARD.encode(value),
+                "{kind:?}"
+            );
             shell.terminate().await;
         }
     }
@@ -582,7 +452,7 @@ mod tests {
                 source(kind, "pwsh -NoProfile -Command 'exit 7'", "(exit 7)"),
             )
             .await;
-            assert_eq!(native.exit_code, 7);
+            assert_eq!(native.exit_code, Some(7));
             assert!(run(&shell, "echo recovered").await.success);
             shell.terminate().await;
         }
@@ -609,7 +479,9 @@ mod tests {
                     Some(1),
                 )
                 .await;
-            assert!(matches!(result, Err(ShellError::Timeout(1))));
+            let result = result.unwrap();
+            assert!(result.timed_out && result.session_ended && !result.session_alive);
+            assert_eq!(result.session_ended_reason.as_deref(), Some("timeout"));
             assert!(shell.execute("echo invalid", None).await.is_err());
         }
     }
@@ -642,7 +514,15 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), shell.terminate())
                 .await
                 .unwrap();
-            assert!(running.await.unwrap().is_err());
+            assert_eq!(
+                running
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .session_ended_reason
+                    .as_deref(),
+                Some("cancelled")
+            );
             assert!(queued.await.unwrap().is_err());
         }
     }
@@ -686,7 +566,7 @@ mod tests {
                     .expect("a shell exit must not hang")
                     .expect("a shell exit is reported as a result, not an I/O error");
             assert!(result.session_ended);
-            assert_eq!(result.exit_code, 3);
+            assert_eq!(result.exit_code, Some(3));
             // The session is gone; the next command fails fast rather than hanging.
             assert!(
                 tokio::time::timeout(Duration::from_secs(10), shell.execute("echo next", None))
@@ -724,7 +604,7 @@ mod tests {
             .await
             .expect("a clean exit is a result");
         assert!(exited.session_ended);
-        assert_eq!(exited.exit_code, 5);
+        assert_eq!(exited.exit_code, Some(5));
         assert!(exited.output.contains("important-diagnostic"));
 
         let shell = bash_backend()
@@ -735,7 +615,7 @@ mod tests {
             .await
             .expect("a set -e failure is a result");
         assert!(sete.session_ended);
-        assert_eq!(sete.exit_code, 1);
+        assert_eq!(sete.exit_code, Some(1));
         assert!(sete.output.contains("before"));
         assert!(!sete.output.contains("after"));
     }
@@ -827,7 +707,7 @@ mod tests {
 
         let shell = Shell::spawn_kind(kind, &path, 1024).await.unwrap();
         let result = run(&shell, invalid).await;
-        assert_eq!(result.exit_code, expected_exit);
+        assert_eq!(result.exit_code, Some(expected_exit));
         assert!(!result.success);
         assert!(!result.session_ended);
         assert!(!result.output.starts_with("SHOULD_NOT_RUN"));

@@ -27,6 +27,10 @@
     background: var(--surface);
     border-radius: 8px;
   }
+  .consent-secrets {
+    margin-bottom: 18px;
+    overflow-wrap: anywhere;
+  }
   .consent-remember {
     margin-top: 20px;
     align-items: flex-start;

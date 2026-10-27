@@ -67,6 +67,100 @@ async fn login(app: &Router, password: &str) -> String {
 }
 
 #[tokio::test]
+async fn credential_management_requires_human_login_and_persists_only_ciphertext() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = stored_state(directory.path());
+    let app = router(state.clone());
+    let value = "fixture-only-vault-value-汉字-123";
+    let body = json!({"key":"JENKINS_CI_TOKEN","value":value});
+    let token = state.auth.lock().await.issue_token(None).unwrap().0;
+    for session in [None, Some(token.as_str())] {
+        assert_eq!(
+            call(&app, "/v1/admin/secrets", None, session).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(&app, "/v1/admin/secrets/put", Some(body.clone()), session)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(
+                &app,
+                "/v1/admin/secrets/remove",
+                Some(json!({"key":"JENKINS_CI_TOKEN"})),
+                session
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let session = login(&app, "test").await;
+    let (status, saved) = call(&app, "/v1/admin/secrets/put", Some(body), Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved, json!({"saved":true}));
+    for path in ["/v1/admin/secrets", "/v1/secrets/keys"] {
+        let (status, listed) = call(&app, path, None, Some(&session)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed, json!({"keys":["JENKINS_CI_TOKEN"]}));
+    }
+    assert_eq!(
+        call(&app, "/v1/secrets/keys", None, None).await.0,
+        StatusCode::OK
+    );
+    for key in ["lower_case", "9KEY", "LOCALSHELLD_SESSION"] {
+        assert_eq!(
+            call(
+                &app,
+                "/v1/admin/secrets/put",
+                Some(json!({"key":key,"value":value})),
+                Some(&session)
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let path = directory.path().join("config.toml");
+    let persisted = std::fs::read_to_string(path.with_extension("authorization.json")).unwrap();
+    assert!(!persisted.contains(value));
+    let restarted = AppState::new(
+        Config::load(&path).unwrap(),
+        AuthManager::new("unused".into(), None),
+    )
+    .with_storage(path)
+    .unwrap();
+    assert_eq!(
+        restarted
+            .resolve_secrets(&["JENKINS_CI_TOKEN".into()])
+            .await
+            .unwrap()
+            .0["JENKINS_CI_TOKEN"],
+        value
+    );
+    let (_, response) = call(
+        &app,
+        "/v1/admin/secrets/put",
+        Some(json!({"key":"JENKINS_CI_TOKEN","value":"rotated"})),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(response, json!({"saved":true}));
+    let (status, removed) = call(
+        &app,
+        "/v1/admin/secrets/remove",
+        Some(json!({"key":"JENKINS_CI_TOKEN"})),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(removed, json!({"removed":true}));
+    assert!(state.secret_keys().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn password_update_is_atomic_accepts_empty_and_invalidates_management_sessions() {
     let directory = tempfile::tempdir().unwrap();
     let state = stored_state(directory.path());

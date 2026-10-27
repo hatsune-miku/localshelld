@@ -10,7 +10,7 @@ localshelld 是面向有经验的设备所有者和维护人员个人自用的�
 
 ## 为什么给 AI 使用
 
-当 Agent 的运行环境或沙箱妨碍用户完成自己的任务时，localshelld 提供现成的本机执行通道。用户态 daemon 负责普通命令，系统 daemon 负责管理员/root 命令；Agent 通过同一个 MCP 入口和 `localshelld_run.sudo` 选择执行身份。
+当 Agent 的运行环境或沙箱妨碍用户完成自己的任务时，localshelld 提供现成的本机执行通道。Windows 使用 `run.privilege_level` 显式选择当前用户、当前用户管理员或 SYSTEM；Linux/macOS 继续使用 boolean `sudo`。长任务调度属于 harness，本项目不提供另一套后台任务系统。
 
 整个过程由用户掌控：
 
@@ -104,7 +104,7 @@ sudo launchctl print system/dev.localshelld
 系统 daemon 默认监听 `127.0.0.1:32119`，在此签发的令牌允许高权限操作：
 
 - 管理 UI：`http://127.0.0.1:32119/`
-- 系统 MCP：`http://127.0.0.1:32119/mcp`（配对用户 daemon 后，也支持 `sudo=false`）
+- 系统 MCP：`http://127.0.0.1:32119/mcp`（配对用户 daemon 后，也支持当前用户执行）
 - 健康检查：`http://127.0.0.1:32119/health`
 
 ## 用户态 daemon
@@ -124,9 +124,21 @@ localshelld install --user
 
 Agent 连接 `http://127.0.0.1:32120/mcp`：
 
-- 在用户页面 `http://127.0.0.1:32120/` 签发的令牌，只允许 `sudo=false`。系统 daemon 未运行时也可使用。
-- 在系统页面 `http://127.0.0.1:32119/` 签发的令牌，通过用户态 MCP 进入后同时允许 `sudo=false` 和 `sudo=true`。`localshelld_enter_with_preauthorized_credential` 返回 `sudo_available`，说明当前授权是否允许高权限操作。
-- `sudo=false` 继承用户 daemon 的账户和环境，`sudo=true` 由系统 daemon 的账户执行。两个 shell 的变量、函数、工作目录和环境分别保持，不在权限之间复制。参数必填，失败时不会自动提权或换身份重试。
+- 在用户页面 `http://127.0.0.1:32120/` 签发的令牌，只允许当前用户执行。系统 daemon 未运行时也可使用。
+- 在系统页面 `http://127.0.0.1:32119/` 签发的令牌允许当前可用的高权限身份；进入响应返回 `privilege_levels` 和 `identities`。Linux/macOS 另外保留 `sudo_available`。
+- 每种身份的变量、函数、工作目录和环境分别保持，不在已有 shell 之间复制状态。执行身份必填，不自动提权、不换身份重试。
+
+### Windows 执行身份
+
+| `privilege_level` | 实际身份与环境 |
+|---|---|
+| `current-user` | 用户 daemon 的非提权账户和环境 |
+| `as-administrator` | 同一用户的真实管理员令牌，保留该用户的 USERPROFILE、HKCU 和用户 PATH |
+| `nt-authority/system` | LocalSystem；配置目录、HKCU、凭据和环境不属于登录用户 |
+
+`as-administrator` 要求已配对的普通用户 daemon 正在运行，且该用户具有可用的 linked administrator token。系统端通过配对加密通道获取用户进程上下文，校验 PID 创建时间、SID 和令牌后启动管理员 shell；没有令牌或权限不足时明确失败，不使用其他管理员账户或 SYSTEM 顶替。运行于非交互环境，不承诺映射网络驱动器或交互桌面可用。保留操作系统用户 profile 不等于执行 PowerShell 的 `$PROFILE` 脚本：仍使用 `-NoProfile`。
+
+Windows run 不再接受 `sudo`，也不接受 `root`。手动以普通管理员运行的系统 daemon 不是 SYSTEM，不能执行 `nt-authority/system`；安装为 LocalSystem 服务才提供该身份。Linux/macOS 保持 `sudo:false` 当前用户、`sudo:true` root，不接受 `privilege_level`。升级时两端 daemon 应使用相同版本。
 - 销毁双权限会话会终止两个 shell。高权限令牌撤销、到期、系统 daemon 关闭或通信失败会关闭其关联的用户 shell；正在运行的命令也会取消。用户态独立令牌不受系统 daemon 重启影响。
 
 用户 daemon 向系统 daemon 传递用户交给它的令牌与命令。Master Password 和 TOTP 用于各自本地页面的签发与管理；执行接口使用 token 和 handle。两种身份的可访问资源由操作系统账户权限决定。
@@ -137,15 +149,15 @@ Agent 连接 `http://127.0.0.1:32120/mcp`：
 
 在“验证方式”中可以修改 Master Password，绑定/替换/移除 TOTP，添加或移除通行密钥。TOTP 必须输入当前动态码完成绑定；通行密钥由浏览器/系统认证器验证，私钥不交给 daemon。通行密钥注册和登录请使用 `http://localhost:32119/` 或 `http://localhost:32120/`，而不是 IP 地址；浏览器需支持 WebAuthn，系统与用户入口分别注册。管理登录仅在页面内存中保留，10 分钟后失效；改密码会清除全部管理登录，不会自动撤销已有执行令牌。
 
-完整安装结束时两个 daemon 都已运行；使用 Agent 之前，应在管理页完成一次显式配对，使系统端的 `sudo=false` 和高权限交互授权可用：
+完整安装结束时两个 daemon 都已运行；使用 Agent 之前，应在管理页完成一次显式配对，使系统端的当前用户执行和高权限交互授权可用：
 
 1. 登录 `http://localhost:32120/`，在“桌面授权”中生成配对码。
 2. 登录 `http://localhost:32119/`，填写用户 daemon 地址和配对码，完成配对。
 3. Agent 可继续连接任一 MCP 入口。系统端的普通命令会交给配对的用户进程，绝不在 root/管理员 shell 中假装降权执行。
 
-配对码是两个 daemon 之间的共享密钥，不是交给 Agent 的访问令牌。仅与自己控制的用户进程配对。未配对时，系统端的普通命令会返回可操作的配置错误；直接使用用户入口及其令牌执行 `sudo=false` 不需要配对。更改端口后需更新配置并重新配对。
+配对码是两个 daemon 之间的共享密钥，不是交给 Agent 的访问令牌。仅与自己控制的用户进程配对。未配对时，系统端的普通命令会返回可操作的配置错误；直接使用用户入口及其令牌执行当前用户命令不需要配对。更改端口后需更新配置并重新配对。
 
-`localshelld_enter_interactive` 需要 `agent_name`、`request_reason` 和 `confirm_text: "OK"`，不需要传 token。已有用户 daemon 负责显示窗口，不新增 GUI daemon：Windows 为原生 Win32 对话框；Linux/macOS 使用系统 WebView。后者可能有 WebView 运行时子进程，命令执行也会创建 shell/命令子进程，不能把“两个 daemon”理解成整个进程树永远只有两个进程。
+`enter_interactive` 需要 `agent_name`、`request_reason` 和 `confirm_text: "OK"`，不需要传 token。已有用户 daemon 负责显示窗口，不新增 GUI daemon：Windows 为原生 Win32 对话框；Linux/macOS 使用系统 WebView。后者可能有 WebView 运行时子进程，命令执行也会创建 shell/命令子进程，不能把“两个 daemon”理解成整个进程树永远只有两个进程。
 
 窗口原样显示缘由，包含接受、拒绝、忽略、记住选择及附加说明。忽略或关闭窗口不会立即拒绝，而是等到原请求的 60,000ms 截止时间；附加说明通过 `btw` 返回。接受后返回 handle，内部创建的 24 小时授权记录可在签发端令牌列表中撤销，不返回原始 token。记忆按 `agent_name` 精确匹配，持久化到磁盘；名称是代理自报信息，不是身份认证。自动接受的结果不标记为自动，也不声称本次有人点击；自动拒绝明确返回 `automatic: true`。
 
@@ -157,7 +169,7 @@ Windows 对话框由系统处理 Tab/Shift+Tab、回车、Esc 和 Alt 快捷键�
 
 本项目已从 SudoServer 更名为 `localshelld`。新版本使用新的服务名和默认配置目录，不会自动接管旧服务。已有安装请先使用旧二进制执行 `sudoserver uninstall`，再用新二进制执行 `localshelld install --config <原配置文件的绝对路径>`；保留原配置文件及同目录的 `seal.key`，即可继续使用原 Master Password 和 TOTP，无需重新 `init`。如需迁移配置目录，请将这两个文件一起迁移，并保留原有访问权限。卸载/重启会结束会话，原令牌需要重新签发。
 
-MCP 配置中的服务键名改为 `localshelld`，推荐连接用户态端口 `32120`。旧 `sudo_*` 工具已替换为 `localshelld_*`，客户端需要刷新工具列表，每次运行显式传入 `sudo: true/false`；HTTP run 接口同样要求此字段。构建和会话环境变量统一使用 `LOCALSHELLD_*` 前缀。新版本自更新仅识别 `localshelld-*` 产物，首次更名升级需手动安装；发布前需将 GitHub 仓库同步更名为 `hatsune-miku/localshelld`。
+MCP 配置中的服务键名改为 `localshelld`，推荐用户态端口 `32120`。当前工具列表使用下文的六个短名称；之前的 `localshelld_*` 长名称暂保留调用兼容，但不重复列出。Windows 客户端须同步从 `sudo` 迁移到 `privilege_level`，仅兼容旧工具名、不兼容旧 Windows 参数。构建和会话环境变量继续使用 `LOCALSHELLD_*` 前缀。
 
 ## 命令行自更新
 
@@ -207,20 +219,41 @@ http://127.0.0.1:32120/mcp
 }
 ```
 
-具体配置文件位置取决于所使用的 Agent。连接成功后应能看到 `localshelld_enter_interactive`、`localshelld_enter_with_preauthorized_credential`、`localshelld_run`、`localshelld_destroy_session` 和 `localshelld_revoke_token` 五个工具。原 `localshelld_enter` 已移除，需要刷新客户端工具列表。新长名称为 47 个 ASCII 字符，符合 [MCP 的 1–128 字符命名建议](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names)；客户端若额外拼接命名空间，应另行检查其限制。
+连接成功后应看到 `secrets_list`、`enter_interactive`、`enter_preauthorized`、`run`、`destroy`、`revoke` 六个工具。两个 enter 分别表示桌面交互授权和预授权 token 进入；短名称保留了两种语义，并给客户端拼接命名空间留出空间。请刷新客户端工具列表；更早的 `localshelld_enter` 不恢复。
 
-MCP 工具说明会明确当前平台和 shell。Agent 应按 `localshelld_enter_with_preauthorized_credential` 返回的 `shell`、`platform` 使用对应语法；Windows PowerShell 脚本不能直接用于 Linux/macOS Bash 会话。
+MCP 工具说明会明确当前平台和 shell。Agent 应按 `enter_preauthorized` 返回的 `shell`、`platform` 使用对应语法；Windows PowerShell 脚本不能直接用于 Linux/macOS Bash 会话。
 
-例如普通用户执行：`localshelld_run({"handle":"…","command":"whoami","sudo":false})`。使用管理员/root 身份执行时传 `sudo:true`，对应会话的 `sudo_available` 为 `true`。
+Windows 当前用户执行：`run({"handle":"…","command":"whoami","privilege_level":"current-user"})`。保留用户环境的管理员执行选择 `as-administrator`；SYSTEM 选择 `nt-authority/system`。Linux/macOS 使用 `run({"handle":"…","command":"id","sudo":false})` 或 `sudo:true`。
+
+可选 `stdin` 为单次 UTF-8 输入，写完即 EOF；省略时立即 EOF。不支持后续输入、PTY、后台任务或轮询接口。响应分开提供 `stdout`/`stderr`、实际执行 `identity`、`duration_ms`、`cwd` 和会话结束原因；不能仅凭 stderr 有文本判断失败。
+
+客户端断连或自身超时不会自动停止命令。显式 `timeout_seconds` 超时会终止整个 handle 的所有 shell/进程树，并返回部分输出、`timed_out:true`、`session_alive:false`。支持 `run` 的 MCP `notifications/cancelled`，客户端须回传初始化响应的 `Mcp-Session-Id`，取消同样销毁整个 handle。普通命令非零退出码不会结束会话。
 
 ## API 概览
+
+### 凭据注入
+
+后台的“凭据”页面管理 key/value；Key 必须大写且直接作为环境变量名，例如 `JENKINS_CI_TOKEN`。值加密保存，列表及工具结果不返回已存的值。已配对时两个后台共用用户 daemon 的凭据库；未配对时使用各自的库。
+
+Agent 可匿名调用 `secrets_list({})`，再把需要的 key 交给任一 enter：
+
+```json
+{"agent_name":"Example Agent","request_reason":"查询用户指定的 Jenkins 构建。","confirm_text":"OK","secret_keys":["JENKINS_CI_TOKEN"]}
+```
+
+授权窗口显示请求的 key 列表。预授权仍使用原执行 token，无需单独的凭据令牌。后续 shell 命令直接引用 `$env:JENKINS_CI_TOKEN`（PowerShell）或 `$JENKINS_CI_TOKEN`（Bash）；同一会话各执行身份的 shell 均自动注入所选凭据。新增 key 不会沿用尚未覆盖它的记忆允许。
+
+会话保留 enter 时的快照。更换或删除后台值不改变已有会话；更改存活会话的 key 选择须先销毁再进入。模型正常使用不需接收明文，但 shell 仍能打印环境变量，不能将此机制视为对获授权命令的防泄露隔离。
+
+### 路径
 
 所有写操作使用 `POST application/json`，避免把 token 或 handle 写入访问日志。完整示例见 [docs/API.md](docs/API.md)。
 
 | 路径 | 请求核心字段 | 用途 |
 |---|---|---|
-| `/v1/sessions/enter` | `token` | 建立或复用令牌的会话 |
-| `/v1/commands/run` | `handle`, `command`, `sudo` | 选择用户或高权限 shell 执行 |
+| `/v1/secrets/keys` | 无，GET | 列出凭据 key |
+| `/v1/sessions/enter` | `token`、可选 `secret_keys` | 建立或复用令牌的会话 |
+| `/v1/commands/run` | `handle`, `command`, Windows `privilege_level` / Unix `sudo`，可选 `stdin` | 显式选择执行身份 |
 | `/v1/sessions/destroy` | `handle` | 终止会话 |
 | `/v1/tokens/revoke` | `token` | 撤销令牌并终止会话 |
 | `/v1/admin/tokens/issue` | `credential`, duration | 签发令牌 |
@@ -246,9 +279,9 @@ HTTP 与 MCP 均为本机 loopback 接口，配置不支持远程监听地址。
 
 - 正确提供 Master Password/TOTP 的主体视为用户本人；token/handle 表达用户授予的运行期权限。
 - 管理凭据仅在验证时使用；日志不记录凭据和命令内容。
-- PowerShell 使用 `-NoProfile -NonInteractive`；Bash 使用 `--noprofile --norc`，同时移除 `BASH_ENV` 等启动注入变量。shell 继承所属 daemon 的身份和环境，不加载 shell profile。
-- 响应在命令完成后返回，不是流式接口；超过 `max_output_bytes` 会截断并继续排空输出，保证后续命令不串包。命令默认无限时，但销毁会话、撤销令牌和服务关闭可中断正在执行的命令。Linux/macOS 会将 shell 放入独立进程组，终止时向整个进程组发信号，一并回收命令启动的子进程和后台任务；主动 `setsid` 或新建进程组脱离的进程仍可能存活。
-- 会话非交互式，不支持终端输入；Bash 命令的 stdin 为 `/dev/null`。`exit`、`exec` 或导致 shell 退出的选项（例如 Bash `set -e` 后失败）会结束会话，但本次调用仍返回已产生的输出与退出码，并置 `session_ended=true`。命令中的 NUL 字节会被拒绝而非静默截断。单 daemon 令牌过期阻止后续调用；跨 daemon 会话还会在高权限授权到期时取消两端正在执行的命令。
+- PowerShell 使用 `-NoProfile -NonInteractive`，Bash 使用 `--noprofile --norc`。普通用户/SYSTEM/root 使用相应 daemon 身份；Windows 管理员使用配对用户的 elevated token 和用户环境。各 shell 不自动加载 profile 脚本。
+- 响应在命令完成后返回，不是实时流；stdout/stderr 各最多保留 `max_output_bytes`，截断后仍排空。Windows 在执行前把 shell 纳入 kill-on-close Job Object，结束时清理整棵子进程树；Unix 清理仍可识别的后代进程及原始进程组。主动双重 fork、脱离进程树并重新托管的 Unix daemon 不保证回收；这不是容器或任务调度器。
+- 会话非交互式，但支持单次 `stdin` 文本和 EOF。`exit`、`exec` 或 `set -e` 导致 shell 退出时保留输出与实际退出码，置 `session_ended=true`；超时/取消时 `exit_code:null`，不伪造命令退出码。NUL 命令被拒绝，stdin 可含 NUL。单 daemon 令牌过期阻止后续调用；跨 daemon 会话到期会终止关联 shell。
 
 更详细的可行性与设计取舍见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

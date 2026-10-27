@@ -118,7 +118,7 @@ async fn verify_user_daemon(headless: bool) {
     assert!(page.contains("/assets/"));
     let issued: Value = client.post(format!("{base}/v1/admin/tokens/issue")).json(&json!({"credential":{"type":"password", "value":"localshelld integration test password"}}))
         .send().await.unwrap().json().await.unwrap();
-    assert!(issued["warning"].as_str().unwrap().contains("sudo=false"));
+    assert!(issued["warning"].as_str().unwrap().contains("current-user"));
     let entered: Value = client
         .post(format!("{base}/v1/sessions/enter"))
         .json(&json!({"token":issued["token"]}))
@@ -128,11 +128,20 @@ async fn verify_user_daemon(headless: bool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(entered["sudo_available"], false);
+    if cfg!(windows) {
+        assert_eq!(entered["privilege_levels"], json!(["current-user"]));
+    } else {
+        assert_eq!(entered["sudo_available"], false);
+    }
     let handle = entered["handle"].as_str().unwrap();
+    let mut body = localshelld::execution::execution_argument(
+        localshelld::execution::PrivilegeLevel::CurrentUser,
+    );
+    body["handle"] = json!(handle);
+    body["command"] = json!("whoami");
     let result: Value = client
         .post(format!("{base}/v1/commands/run"))
-        .json(&json!({"handle":handle,"command":"whoami","sudo":false}))
+        .json(&body)
         .send()
         .await
         .unwrap()
@@ -145,9 +154,14 @@ async fn verify_user_daemon(headless: bool) {
         result["output"].as_str().unwrap().trim(),
         String::from_utf8_lossy(&expected.stdout).trim()
     );
+    let mut body = localshelld::execution::execution_argument(
+        localshelld::execution::PrivilegeLevel::privileged(),
+    );
+    body["handle"] = json!(handle);
+    body["command"] = json!("whoami");
     let denied = client
         .post(format!("{base}/v1/commands/run"))
-        .json(&json!({"handle":handle,"command":"whoami","sudo":true}))
+        .json(&body)
         .send()
         .await
         .unwrap();

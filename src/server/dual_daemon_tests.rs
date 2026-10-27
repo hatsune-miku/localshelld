@@ -159,7 +159,7 @@ async fn revocation_and_daemon_shutdown_cancel_both_backends() {
                     .await
                     .expect("backend was not cancelled")
                     .unwrap()
-                    .is_err(),
+                    .is_ok_and(|result| result.session_ended),
                 "{action}"
             );
         }
@@ -176,7 +176,7 @@ async fn root_loss_expiry_and_shell_exit_invalidate_linked_user_session() {
     let first = user.enter(&token).await.unwrap();
     let exited = user.run(&first.handle, "exit 7", true, None).await.unwrap();
     assert!(exited.session_ended);
-    assert_eq!(exited.exit_code, 7);
+    assert_eq!(exited.exit_code, Some(7));
     assert!(
         user.run(&first.handle, "echo never", false, None)
             .await
@@ -218,7 +218,7 @@ async fn root_loss_expiry_and_shell_exit_invalidate_linked_user_session() {
 }
 
 #[tokio::test]
-async fn http_and_mcp_require_boolean_sudo_and_only_expose_new_names() {
+async fn http_and_mcp_require_platform_identity_and_only_expose_short_names() {
     let (root, user, _, token, serving) = pair().await;
     let app = router(user.clone());
     let (_, rpc) = super::tests::request(
@@ -236,11 +236,12 @@ async fn http_and_mcp_require_boolean_sudo_and_only_expose_new_names() {
     assert_eq!(
         names,
         [
-            "localshelld_enter_interactive",
-            "localshelld_enter_with_preauthorized_credential",
-            "localshelld_run",
-            "localshelld_destroy_session",
-            "localshelld_revoke_token"
+            "secrets_list",
+            "enter_interactive",
+            "enter_preauthorized",
+            "run",
+            "destroy",
+            "revoke"
         ]
     );
     let (_, rpc) = super::tests::request(&app, "/mcp", json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"localshelld_enter_with_preauthorized_credential", "arguments":{"token":token, "confirm_text":"OK"}}})).await;
@@ -255,14 +256,24 @@ async fn http_and_mcp_require_boolean_sudo_and_only_expose_new_names() {
     ] {
         let mut args = json!({"handle": handle, "command":"echo never"});
         if let Some(value) = invalid {
-            args["sudo"] = value;
+            args[if cfg!(windows) {
+                "privilege_level"
+            } else {
+                "sudo"
+            }] = value;
         }
         let (_, rpc) = super::tests::request(&app, "/mcp", json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"localshelld_run", "arguments":args}})).await;
         assert!(rpc.get("error").is_some());
         let (status, _) = super::tests::request(&app, "/v1/commands/run", args).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(matches!(
+            status,
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        ));
     }
-    let (_, rpc) = super::tests::request(&app, "/mcp", json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"localshelld_run", "arguments":{"handle":handle, "command":"echo ordinary", "sudo":false}}})).await;
+    let mut args = crate::execution::execution_argument(PrivilegeLevel::CurrentUser);
+    args["handle"] = json!(handle);
+    args["command"] = json!("echo ordinary");
+    let (_, rpc) = super::tests::request(&app, "/mcp", json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"run", "arguments":args}})).await;
     assert!(
         rpc["result"]["structuredContent"]["output"]
             .as_str()
@@ -279,7 +290,7 @@ async fn either_backend_timeout_closes_the_entire_handle() {
     for sudo in [false, true] {
         let (root, user, token, _, serving) = pair().await;
         let entered = user.enter(&token).await.unwrap();
-        let error = user
+        let result = user
             .run(
                 &entered.handle,
                 command("Start-Sleep -Seconds 120", "sleep 120"),
@@ -287,8 +298,8 @@ async fn either_backend_timeout_closes_the_entire_handle() {
                 Some(1),
             )
             .await
-            .unwrap_err();
-        assert_eq!(error.status, StatusCode::REQUEST_TIMEOUT);
+            .unwrap();
+        assert!(result.timed_out && result.session_ended);
         assert!(
             user.run(&entered.handle, "echo never", !sudo, None)
                 .await

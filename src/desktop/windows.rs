@@ -36,6 +36,7 @@ impl Desktop {
                         agent: prompt.agent_name,
                         reason: prompt.request_reason,
                         scope: prompt.scope,
+                        secret_keys: prompt.secret_keys,
                         deadline: Instant::now() + Duration::from_millis(remaining as u64),
                         complete: Box::new(move |outcome| {
                             let choice = match outcome.choice {

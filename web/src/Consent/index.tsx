@@ -4,7 +4,14 @@ import { Button, CakeProvider, CheckBox, Field, TextArea } from '@a1knla/cakeui'
 
 import './index.scss'
 
-type Prompt = { id: string; agent_name: string; request_reason: string; scope: string; expires_at_ms: number }
+type Prompt = {
+  id: string
+  agent_name: string
+  request_reason: string
+  scope: string
+  secret_keys?: string[]
+  expires_at_ms: number
+}
 declare global {
   interface Window {
     __LOCALSHELLD_PROMPT__?: Prompt
@@ -41,6 +48,17 @@ export function Consent() {
             </header>
             <p className="consent-agent">{prompt.agent_name}</p>
             <p className="description">授权范围：{prompt.scope}</p>
+            {!!prompt.secret_keys?.length && (
+              <Field htmlFor="consent-secrets" label="请求注入的凭据">
+                <TextArea
+                  id="consent-secrets"
+                  className="consent-secrets"
+                  value={prompt.secret_keys.join('\n')}
+                  readOnly
+                  rows={3}
+                />
+              </Field>
+            )}
             <section className="consent-reason" aria-label="代理提供的请求缘由">
               {prompt.request_reason}
             </section>
@@ -59,7 +77,7 @@ export function Consent() {
               checked={remember}
               onChange={(event) => setRemember(event.currentTarget.checked)}
             >
-              记住我的选择，后续来自 {prompt.agent_name} 的请求按本次选择处理
+              记住对 {prompt.agent_name} 的选择；新增凭据需再次授权
             </CheckBox>
             <div className="consent-actions">
               <Button variant="ghost" disabled={sent || !remaining} onClick={() => choose('ignore')}>

@@ -16,6 +16,8 @@ pub struct Prompt {
     pub agent_name: String,
     pub request_reason: String,
     pub scope: String,
+    #[serde(default)]
+    pub secret_keys: Vec<String>,
     pub expires_at_ms: i64,
 }
 
@@ -139,6 +141,7 @@ mod tests {
             agent_name: "agent".into(),
             request_reason: "reason <script> unchanged".into(),
             scope: "user".into(),
+            secret_keys: vec![],
             expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         }
     }

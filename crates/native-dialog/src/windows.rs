@@ -14,7 +14,8 @@ use windows_sys::{
     Win32::{
         Foundation::{HWND, LPARAM, RECT, WPARAM},
         Graphics::Gdi::{
-            CreateFontIndirectW, DEFAULT_GUI_FONT, DeleteObject, GetStockObject, HFONT,
+            CreateFontIndirectW, DEFAULT_GUI_FONT, DT_CALCRECT, DT_NOPREFIX, DT_WORDBREAK,
+            DeleteObject, DrawTextW, GetDC, GetStockObject, HFONT, ReleaseDC, SelectObject,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -31,6 +32,10 @@ const WAKE: u32 = WM_APP + 13;
 const QUEUE_CAPACITY: usize = 64;
 const MAX_WINDOWS: usize = 8;
 const NOTE_LIMIT: usize = 4096;
+const DEFAULT_WIDTH: i32 = 600;
+const DEFAULT_HEIGHT: i32 = 480;
+const MIN_WIDTH: i32 = 500;
+const MARGIN: i32 = 14;
 const WINDOW_STYLE: u32 = WS_CAPTION
     | WS_SYSMENU
     | WS_THICKFRAME
@@ -49,6 +54,8 @@ const REASON: i32 = 106;
 const NOTE_LABEL: i32 = 107;
 const NOTE: i32 = 108;
 const REMEMBER: i32 = 109;
+const SECRETS_LABEL: i32 = 110;
+const SECRETS: i32 = 111;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -71,6 +78,7 @@ pub struct Request {
     pub agent: String,
     pub reason: String,
     pub scope: String,
+    pub secret_keys: Vec<String>,
     pub deadline: Instant,
     pub complete: Completion,
 }
@@ -292,6 +300,7 @@ struct WindowState {
     agent: String,
     reason: String,
     scope: String,
+    secret_keys: Vec<String>,
     deadline: Instant,
     complete: RefCell<Option<Completion>>,
     dpi: Cell<u32>,
@@ -306,6 +315,7 @@ impl Window {
             agent: request.agent,
             reason: request.reason,
             scope: request.scope,
+            secret_keys: request.secret_keys,
             deadline: request.deadline,
             complete: RefCell::new(Some(request.complete)),
             dpi: Cell::new(96),
@@ -443,7 +453,8 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_GETMINMAXINFO => {
                 let bounds = &mut *(lp as *mut MINMAXINFO);
-                let size = outer_size(500, 560, state.dpi.get());
+                let height = minimum_height(hwnd, MIN_WIDTH, state.dpi.get());
+                let size = outer_size(MIN_WIDTH, height, state.dpi.get());
                 bounds.ptMinTrackSize.x = size.0;
                 bounds.ptMinTrackSize.y = size.1;
                 return 1;
@@ -549,6 +560,24 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
     )?;
     child(hwnd, w!("STATIC"), "请求缘由(&R)：", REASON_LABEL, 0, 0)?;
     let edit_style = WS_TABSTOP | WS_VSCROLL | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32;
+    if !state.secret_keys.is_empty() {
+        child(
+            hwnd,
+            w!("STATIC"),
+            "请求注入的凭据(&K)：",
+            SECRETS_LABEL,
+            0,
+            0,
+        )?;
+        child(
+            hwnd,
+            w!("EDIT"),
+            &state.secret_keys.join("\r\n"),
+            SECRETS,
+            edit_style | ES_READONLY as u32,
+            WS_EX_CLIENTEDGE,
+        )?;
+    }
     child(
         hwnd,
         w!("EDIT"),
@@ -570,7 +599,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
     child(
         hwnd,
         w!("BUTTON"),
-        &format!("记住我的选择，后续来自 {agent} 的请求按本次选择处理(&M)"),
+        &format!("记住对 {agent} 的选择；新增凭据需再次授权(&M)"),
         REMEMBER,
         WS_TABSTOP | BS_AUTOCHECKBOX as u32 | BS_MULTILINE as u32,
         0,
@@ -607,7 +636,12 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
         SendMessageW(hwnd, DM_SETDEFID, IDCANCEL as usize, 0);
         state.dpi.set(GetDpiForWindow(hwnd).max(96));
         set_fonts(hwnd, state);
-        let (width, height) = outer_size(640, 620, state.dpi.get());
+        let height = (DEFAULT_HEIGHT + secrets_height(hwnd)).max(minimum_height(
+            hwnd,
+            MIN_WIDTH,
+            state.dpi.get(),
+        ));
+        let (width, height) = outer_size(DEFAULT_WIDTH, height, state.dpi.get());
         SetWindowPos(
             hwnd,
             null_mut(),
@@ -646,6 +680,70 @@ fn scale(value: i32, dpi: u32) -> i32 {
     ((i64::from(value) * i64::from(dpi) + 48) / 96) as i32
 }
 
+// Measure the actual system font and wrapping instead of reserving several
+// empty lines for short names. Long names still get all the space they need.
+fn text_height(hwnd: HWND, id: i32, width: i32, dpi: u32) -> i32 {
+    // SAFETY: controls/fonts belong to this UI thread; buffers include a NUL.
+    // Restore the borrowed font and release the DC before returning.
+    unsafe {
+        let control = GetDlgItem(hwnd, id);
+        let dc = GetDC(control);
+        if dc.is_null() {
+            return 86;
+        }
+        let font = SendMessageW(control, WM_GETFONT, 0, 0) as HFONT;
+        let previous = SelectObject(dc, font);
+        let mut text = vec![0u16; GetWindowTextLengthW(control) as usize + 1];
+        let length = GetWindowTextW(control, text.as_mut_ptr(), text.len() as i32);
+        let mut rect = RECT {
+            right: scale(width, dpi),
+            ..RECT::default()
+        };
+        DrawTextW(
+            dc,
+            text.as_ptr(),
+            length,
+            &mut rect,
+            DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+        );
+        SelectObject(dc, previous);
+        ReleaseDC(control, dc);
+        ((rect.bottom * 96 + dpi as i32 - 1) / dpi as i32 + 4).max(20)
+    }
+}
+
+fn secrets_height(hwnd: HWND) -> i32 {
+    // SAFETY: queried only on the owning UI thread while the parent is alive.
+    if unsafe { GetDlgItem(hwnd, SECRETS) }.is_null() {
+        0
+    } else {
+        96
+    }
+}
+
+fn minimum_height(hwnd: HWND, width: i32, dpi: u32) -> i32 {
+    let content = width - MARGIN * 2;
+    let agent = text_height(hwnd, AGENT, content, dpi);
+    let scope = text_height(hwnd, SCOPE, content, dpi);
+    let remember = text_height(hwnd, REMEMBER, content - 24, dpi);
+    // Header, labels/gaps, an 80 px reason, 64 px note, and 32 px buttons.
+    44 + agent
+        + 4
+        + scope
+        + 8
+        + secrets_height(hwnd)
+        + 24
+        + 80
+        + 8
+        + 24
+        + 64
+        + 10
+        + remember
+        + 10
+        + 32
+        + MARGIN
+}
+
 fn layout(hwnd: HWND, state: &WindowState) {
     if !state.initialized.get() {
         return;
@@ -669,21 +767,40 @@ fn layout(hwnd: HWND, state: &WindowState) {
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
         };
-        let content = width - 40;
-        move_control(HEADER, 20, 18, content - 100, 28);
-        move_control(COUNTDOWN, width - 112, 22, 92, 24);
-        move_control(AGENT, 20, 54, content, 52);
-        move_control(SCOPE, 20, 111, content, 38);
-        move_control(REASON_LABEL, 20, 155, content, 22);
-        let bottom = height - 20;
-        let note_y = height - 240;
-        move_control(REASON, 20, 181, content, (note_y - 218).max(80));
-        move_control(NOTE_LABEL, 20, note_y - 27, content, 22);
-        move_control(NOTE, 20, note_y, content, 72);
-        move_control(REMEMBER, 20, note_y + 86, content, 86);
-        move_control(IDCANCEL, width - 324, bottom - 36, 92, 34);
-        move_control(IDNO, width - 222, bottom - 36, 92, 34);
-        move_control(IDOK, width - 120, bottom - 36, 100, 34);
+        let content = width - MARGIN * 2;
+        let agent_height = text_height(hwnd, AGENT, content, dpi);
+        let scope_height = text_height(hwnd, SCOPE, content, dpi);
+        let remember_height = text_height(hwnd, REMEMBER, content - 24, dpi);
+        move_control(HEADER, MARGIN, 12, content - 100, 24);
+        move_control(COUNTDOWN, width - MARGIN - 92, 14, 92, 22);
+        move_control(AGENT, MARGIN, 44, content, agent_height);
+        let scope_y = 44 + agent_height + 4;
+        move_control(SCOPE, MARGIN, scope_y, content, scope_height);
+        let secrets_y = scope_y + scope_height + 8;
+        let secrets_height = secrets_height(hwnd);
+        if secrets_height > 0 {
+            move_control(SECRETS_LABEL, MARGIN, secrets_y, content, 20);
+            move_control(SECRETS, MARGIN, secrets_y + 24, content, 64);
+        }
+        let reason_label_y = secrets_y + secrets_height;
+        move_control(REASON_LABEL, MARGIN, reason_label_y, content, 20);
+        let reason_y = reason_label_y + 24;
+        let buttons_y = height - MARGIN - 32;
+        let remember_y = buttons_y - 10 - remember_height;
+        let note_y = remember_y - 10 - 64;
+        move_control(
+            REASON,
+            MARGIN,
+            reason_y,
+            content,
+            (note_y - 32 - reason_y).max(80),
+        );
+        move_control(NOTE_LABEL, MARGIN, note_y - 24, content, 20);
+        move_control(NOTE, MARGIN, note_y, content, 64);
+        move_control(REMEMBER, MARGIN, remember_y, content, remember_height);
+        move_control(IDCANCEL, width - MARGIN - 296, buttons_y, 92, 32);
+        move_control(IDNO, width - MARGIN - 196, buttons_y, 92, 32);
+        move_control(IDOK, width - MARGIN - 96, buttons_y, 96, 32);
     }
 }
 
@@ -724,6 +841,8 @@ fn set_fonts(hwnd: HWND, state: &WindowState) {
             COUNTDOWN,
             AGENT,
             SCOPE,
+            SECRETS_LABEL,
+            SECRETS,
             REASON_LABEL,
             REASON,
             NOTE_LABEL,
@@ -805,12 +924,25 @@ mod tests {
     use std::time::Duration;
 
     fn fixture(deadline: Instant) -> (Window, mpsc::Receiver<Outcome>) {
+        fixture_with_agent(deadline, "测试 & Agent 😀".into())
+    }
+
+    fn fixture_with_agent(deadline: Instant, agent: String) -> (Window, mpsc::Receiver<Outcome>) {
+        fixture_with_secrets(deadline, agent, vec![])
+    }
+
+    fn fixture_with_secrets(
+        deadline: Instant,
+        agent: String,
+        secret_keys: Vec<String>,
+    ) -> (Window, mpsc::Receiver<Outcome>) {
         let (send, receive) = mpsc::channel();
         let window = Window::new(Request {
             id: "test".into(),
-            agent: "测试 & Agent 😀".into(),
+            agent,
             reason: "原样 <script> & 中文\n第二行".repeat(500),
             scope: "无（只测试界面，不授予权限）".into(),
+            secret_keys,
             deadline,
             complete: Box::new(move |outcome| {
                 let _ = send.send(outcome);
@@ -848,6 +980,62 @@ mod tests {
         assert_eq!(scale(640, 192), 1280);
         assert_eq!(std::mem::align_of::<Template>(), 4);
         assert_eq!(size_of::<Template>(), 24);
+    }
+
+    #[test]
+    fn compact_layout_preserves_wrapped_text_and_spacing_at_multiple_dpis() {
+        for agent in ["测试 & Agent 😀".to_owned(), "很长的代理名称".repeat(18)] {
+            let (window, _) = fixture_with_agent(Instant::now() + Duration::from_secs(60), agent);
+            for dpi in [96, 144, 192] {
+                window._state.dpi.set(dpi);
+                set_fonts(window.hwnd, &window._state);
+                let minimum = minimum_height(window.hwnd, MIN_WIDTH, dpi);
+                for (width, height) in [
+                    (DEFAULT_WIDTH, DEFAULT_HEIGHT.max(minimum)),
+                    (MIN_WIDTH, minimum),
+                ] {
+                    let (width, height) = outer_size(width, height, dpi);
+                    unsafe {
+                        SetWindowPos(
+                            window.hwnd,
+                            null_mut(),
+                            0,
+                            0,
+                            width,
+                            height,
+                            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                        let mut previous = RECT::default();
+                        for id in [
+                            AGENT,
+                            SCOPE,
+                            REASON_LABEL,
+                            REASON,
+                            NOTE_LABEL,
+                            NOTE,
+                            REMEMBER,
+                            IDOK,
+                        ] {
+                            let mut rect = RECT::default();
+                            GetWindowRect(GetDlgItem(window.hwnd, id), &mut rect);
+                            assert!(
+                                rect.top >= previous.bottom,
+                                "overlapping control {id} at {dpi} DPI"
+                            );
+                            assert!(rect.bottom > rect.top && rect.right > rect.left);
+                            previous = rect;
+                        }
+                        let mut reason = RECT::default();
+                        GetWindowRect(GetDlgItem(window.hwnd, REASON), &mut reason);
+                        assert!(reason.bottom - reason.top >= scale(80, dpi));
+                        assert_eq!(
+                            SendMessageW(window.hwnd, DM_GETDEFID, 0, 0) & 0xffff,
+                            IDCANCEL as isize
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -895,6 +1083,61 @@ mod tests {
                 SendMessageW(GetDlgItem(window.hwnd, NOTE), WM_GETFONT, 0, 0),
                 0
             );
+        }
+    }
+
+    #[test]
+    fn credential_list_is_complete_readonly_and_scrollable_at_multiple_dpis() {
+        let keys: Vec<_> = (0..64)
+            .map(|index| format!("KEY_{index:02}_{}", "X".repeat(121)))
+            .collect();
+        let (window, _) = fixture_with_secrets(
+            Instant::now() + Duration::from_secs(60),
+            "Test agent".into(),
+            keys.clone(),
+        );
+        unsafe {
+            let control = GetDlgItem(window.hwnd, SECRETS);
+            assert_eq!(text(control), keys.join("\r\n"));
+            let style = GetWindowLongPtrW(control, GWL_STYLE) as u32;
+            assert_ne!(style & ES_READONLY as u32, 0);
+            assert_ne!(style & WS_VSCROLL, 0);
+            for dpi in [96, 144, 192] {
+                window._state.dpi.set(dpi);
+                set_fonts(window.hwnd, &window._state);
+                let (width, height) =
+                    outer_size(MIN_WIDTH, minimum_height(window.hwnd, MIN_WIDTH, dpi), dpi);
+                SetWindowPos(
+                    window.hwnd,
+                    null_mut(),
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                let mut previous = RECT::default();
+                for id in [
+                    SCOPE,
+                    SECRETS_LABEL,
+                    SECRETS,
+                    REASON_LABEL,
+                    REASON,
+                    NOTE_LABEL,
+                    NOTE,
+                    REMEMBER,
+                    IDOK,
+                ] {
+                    let mut rect = RECT::default();
+                    GetWindowRect(GetDlgItem(window.hwnd, id), &mut rect);
+                    assert!(
+                        rect.top >= previous.bottom,
+                        "control {id} overlaps at {dpi} DPI"
+                    );
+                    assert!(rect.bottom > rect.top);
+                    previous = rect;
+                }
+            }
         }
     }
 

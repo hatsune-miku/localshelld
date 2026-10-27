@@ -96,12 +96,14 @@ test('mobile layout does not overflow and settings remain available', async ({ p
 })
 
 test('consent content is literal text and returns choice plus note only through native IPC', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 780 })
   await page.addInitScript(() => {
     window.__LOCALSHELLD_PROMPT__ = {
       id: 'test',
       agent_name: 'Test agent',
       request_reason: 'literal <script>alert(1)</script>\nsecond line',
       scope: '仅回归测试，不执行命令',
+      secret_keys: ['JENKINS_CI_TOKEN', 'OPENAI_API_KEY'],
       expires_at_ms: Date.now() + 60000,
     }
     window.ipc = {
@@ -112,6 +114,10 @@ test('consent content is literal text and returns choice plus note only through 
   })
   await page.goto('/consent.html')
   await expect(page.getByLabel('代理提供的请求缘由')).toHaveText('literal <script>alert(1)</script>\nsecond line')
+  await expect(page.getByLabel('请求注入的凭据')).toHaveValue('JENKINS_CI_TOKEN\nOPENAI_API_KEY')
+  await expect(page.getByLabel('请求注入的凭据')).toHaveAttribute('readonly', '')
+  await expect(page.getByRole('button', { name: '接受', exact: true })).toBeInViewport()
+  await page.screenshot({ path: 'test-results/consent-secrets.png', fullPage: true })
   await page.getByLabel('附加说明', { exact: true }).fill('additional note')
   await page.getByRole('checkbox').check()
   await page.getByRole('button', { name: '接受', exact: true }).click()
@@ -120,6 +126,50 @@ test('consent content is literal text and returns choice plus note only through 
     remember: true,
     btw: 'additional note',
   })
+})
+
+test('credentials require uppercase keys and support write-only creation, replacement and deletion', async ({
+  page,
+}) => {
+  await login(page)
+  await page.getByRole('button', { name: '凭据', exact: true }).click()
+  const keyInput = page.getByLabel('Key', { exact: true })
+  const valueInput = page.getByLabel('值', { exact: true })
+  await keyInput.fill('lower_case')
+  await valueInput.fill('fixture-browser-value')
+  await page.getByRole('button', { name: '添加凭据', exact: true }).click()
+  expect(await keyInput.evaluate((input: HTMLInputElement) => input.validity.patternMismatch)).toBe(true)
+  await keyInput.fill('BROWSER_TEST_TOKEN')
+  const savedResponse = page.waitForResponse((response) => response.url().endsWith('/v1/admin/secrets/put'))
+  await page.getByRole('button', { name: '添加凭据', exact: true }).click()
+  expect(await (await savedResponse).json()).toEqual({ saved: true })
+  await expect(page.getByText('凭据已保存。', { exact: true })).toBeVisible()
+  await expect(valueInput).toHaveValue('')
+  const row = page.getByRole('listitem').filter({ hasText: 'BROWSER_TEST_TOKEN' })
+  await expect(row).toBeVisible()
+  await expect(page.getByText('fixture-browser-value', { exact: true })).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/desktop-secrets.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: 'test-results/mobile-secrets.png', fullPage: true })
+  await row.getByRole('button', { name: '更换', exact: true }).click()
+  await expect(keyInput).toHaveAttribute('readonly', '')
+  await expect(page.getByLabel('新值', { exact: true })).toHaveValue('')
+  await page.getByLabel('新值', { exact: true }).fill('fixture-browser-rotated')
+  await page.getByRole('button', { name: '保存新值', exact: true }).click()
+  await expect(page.getByLabel('值', { exact: true })).toHaveValue('')
+  await page.reload()
+  await login(page)
+  await page.getByRole('button', { name: '凭据', exact: true }).click()
+  await expect(page.getByRole('listitem').filter({ hasText: 'BROWSER_TEST_TOKEN' })).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page
+    .getByRole('listitem')
+    .filter({ hasText: 'BROWSER_TEST_TOKEN' })
+    .getByRole('button', { name: '删除', exact: true })
+    .click()
+  await expect(page.getByText('凭据已删除。', { exact: true })).toBeVisible()
+  await expect(page.getByRole('listitem').filter({ hasText: 'BROWSER_TEST_TOKEN' })).toHaveCount(0)
 })
 
 test('desktop overview renders cleanly', async ({ page }) => {

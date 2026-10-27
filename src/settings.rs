@@ -16,6 +16,8 @@ pub struct Pairing {
 #[serde(default)]
 pub struct SavedSettings {
     pub remembered: BTreeMap<String, bool>,
+    pub remembered_secrets: BTreeMap<String, Vec<String>>,
+    pub secrets: BTreeMap<String, crate::config::SealedSecret>,
     pub pairing: Option<Pairing>,
     pub passkeys: Vec<StoredPasskey>,
     pub user_id: Option<uuid::Uuid>,
@@ -33,23 +35,34 @@ pub struct Settings {
     pub config_path: Option<PathBuf>,
     pub config: Config,
     pub saved: SavedSettings,
+    pub(crate) seal_key: zeroize::Zeroizing<[u8; 32]>,
 }
 
 impl Settings {
     pub fn memory(config: Config) -> Self {
+        use rand_core::RngCore;
+        let mut seal_key = zeroize::Zeroizing::new([0_u8; 32]);
+        rand_core::OsRng.fill_bytes(seal_key.as_mut());
         Self {
             config_path: None,
             config,
             saved: SavedSettings::default(),
+            seal_key,
         }
     }
 
     pub fn load(path: PathBuf, config: Config) -> anyhow::Result<Self> {
-        let saved = storage::load_json(&path.with_extension("authorization.json"))?;
+        let saved: SavedSettings = storage::load_json(&path.with_extension("authorization.json"))?;
+        let key_path = crate::config::seal_key_path(&path);
+        if !saved.secrets.is_empty() && !key_path.exists() {
+            anyhow::bail!("credential encryption key is missing");
+        }
+        let seal_key = crate::config::load_or_create_seal_key(&key_path)?;
         Ok(Self {
             config_path: Some(path),
             config,
             saved,
+            seal_key,
         })
     }
 

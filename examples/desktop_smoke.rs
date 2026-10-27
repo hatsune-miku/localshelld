@@ -16,6 +16,7 @@ fn main() {
                     "仅用于界面测试，不授予任何命令权限。\n检查原生窗口、完整缘由和附加说明回传。"
                         .into(),
                 scope: "无（测试）".into(),
+                secret_keys: vec!["JENKINS_CI_TOKEN".into(), "OPENAI_API_KEY".into()],
                 expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
             })
             .await;

@@ -24,12 +24,31 @@ use crate::{
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Ping,
+    Identity,
+    #[cfg(windows)]
+    UserContext,
     Consent {
         prompt: Prompt,
     },
     EnterInteractive {
         agent_name: String,
         request_reason: String,
+        #[serde(default)]
+        secret_keys: Vec<String>,
+    },
+    SecretsList,
+    SecretPut {
+        key: String,
+        value: String,
+    },
+    SecretRemove {
+        key: String,
+    },
+    SecretsResolve {
+        keys: Vec<String>,
+    },
+    SessionEnvironment {
+        handle: String,
     },
     Attach {
         handle: String,
@@ -38,6 +57,8 @@ pub enum Request {
         handle: String,
         command: String,
         timeout_seconds: Option<u64>,
+        #[serde(default)]
+        stdin: String,
     },
 }
 
@@ -240,11 +261,21 @@ pub async fn handle(
 
 async fn dispatch(state: &AppState, request: Request) -> Result<Value, ApiError> {
     match (state.mode, request) {
+        (DaemonMode::User, Request::Identity) => crate::execution::current_identity()
+            .map_err(|error| ApiError::internal(error.to_string())),
+        #[cfg(windows)]
+        (DaemonMode::User, Request::UserContext) => {
+            let context = localshelld_native_process::current_user_context()
+                .map_err(|error| ApiError::unavailable(error.to_string()))?;
+            serde_json::to_value(context)
+                .map_err(|_| ApiError::internal("user context serialization failed"))
+        }
         (_, Request::Ping) => {
             Ok(json!({"daemon": state.mode, "desktop_available": state.consent.is_some()}))
         }
         (DaemonMode::User, Request::Consent { prompt }) => {
             crate::consent::validate_request(&prompt.agent_name, &prompt.request_reason)?;
+            crate::secrets::normalize_keys(&prompt.secret_keys)?;
             let broker = state
                 .consent
                 .as_ref()
@@ -257,8 +288,34 @@ async fn dispatch(state: &AppState, request: Request) -> Result<Value, ApiError>
             Request::EnterInteractive {
                 agent_name,
                 request_reason,
+                secret_keys,
             },
-        ) => Box::pin(state.enter_interactive(&agent_name, &request_reason)).await,
+        ) => {
+            Box::pin(state.enter_interactive_with_secrets(
+                &agent_name,
+                &request_reason,
+                &secret_keys,
+            ))
+            .await
+        }
+        (DaemonMode::User, Request::SecretsList) => Ok(json!(Box::pin(state.secret_keys()).await?)),
+        (DaemonMode::User, Request::SecretPut { key, value }) => {
+            let value = zeroize::Zeroizing::new(value);
+            Box::pin(state.put_secret(&key, &value)).await?;
+            Ok(Value::Null)
+        }
+        (DaemonMode::User, Request::SecretRemove { key }) => {
+            Box::pin(state.remove_secret(&key)).await?;
+            Ok(Value::Null)
+        }
+        (DaemonMode::User, Request::SecretsResolve { keys }) => {
+            serde_json::to_value(Box::pin(state.resolve_secrets(&keys)).await?)
+                .map_err(|_| ApiError::internal("environment serialization failed"))
+        }
+        (DaemonMode::Privileged, Request::SessionEnvironment { handle }) => {
+            serde_json::to_value(state.session_environment(&handle).await?)
+                .map_err(|_| ApiError::internal("environment serialization failed"))
+        }
         (DaemonMode::User, Request::Attach { handle }) => {
             let entered = state.attach_remote(&handle).await?;
             serde_json::to_value(entered)
@@ -270,10 +327,20 @@ async fn dispatch(state: &AppState, request: Request) -> Result<Value, ApiError>
                 handle,
                 command,
                 timeout_seconds,
+                stdin,
             },
         ) => {
             // This endpoint never executes elevated commands in the desktop.
-            let result = Box::pin(state.run(&handle, &command, false, timeout_seconds)).await?;
+            let result = Box::pin(state.run_command(
+                &handle,
+                &command,
+                crate::execution::PrivilegeLevel::CurrentUser,
+                crate::execution::RunOptions {
+                    stdin,
+                    timeout_seconds,
+                },
+            ))
+            .await?;
             serde_json::to_value(result)
                 .map_err(|_| ApiError::internal("execution serialization failed"))
         }
