@@ -24,6 +24,7 @@ use zeroize::{Zeroize, Zeroizing};
 mod installation;
 #[cfg(any(target_os = "macos", test))]
 mod launchd;
+mod maintenance;
 mod update;
 mod user_service;
 #[cfg(windows)]
@@ -38,6 +39,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandKind {
+    /// Open the graphical installation and maintenance wizard in a local browser.
+    #[command(alias = "setup")]
+    Maintenance {
+        /// Print the local wizard URL without opening the browser.
+        #[arg(long)]
+        no_open: bool,
+    },
+    /// Internal, one-shot installer. Never exposed by either daemon.
+    #[command(hide = true)]
+    MaintenanceApply { plan: PathBuf, digest: String },
     /// Initialize the Master Password and optional Authenticator support.
     Init {
         /// Initialize an independent current-user daemon configuration.
@@ -116,9 +127,16 @@ enum CommandKind {
 }
 
 fn main() -> Result<()> {
-    let command = Cli::parse().command;
+    let command = if std::env::args_os().len() == 1 {
+        CommandKind::Maintenance { no_open: false }
+    } else {
+        Cli::parse().command
+    };
     #[cfg(windows)]
-    if matches!(&command, CommandKind::Serve { user: true, .. }) {
+    if matches!(
+        &command,
+        CommandKind::Serve { user: true, .. } | CommandKind::Maintenance { no_open: false }
+    ) {
         localshelld_native_dialog::detach_owned_console()
             .context("failed to detach the user daemon's standalone console")?;
     }
@@ -158,6 +176,10 @@ fn main() -> Result<()> {
 
 async fn run_command(command: CommandKind) -> Result<()> {
     match command {
+        CommandKind::Maintenance { no_open } => maintenance::run(no_open).await,
+        CommandKind::MaintenanceApply { plan, digest } => {
+            tokio::task::spawn_blocking(move || maintenance::apply(&plan, &digest)).await?
+        }
         CommandKind::Init {
             user,
             config,
@@ -479,9 +501,8 @@ fn require_user() -> Result<()> {
 
 #[cfg(windows)]
 fn windows_command(relative: &str) -> Result<Command> {
-    let root = std::env::var_os("SystemRoot").context("missing SystemRoot")?;
     Ok(localshelld::process::background_command(
-        PathBuf::from(root).join("System32").join(relative),
+        localshelld_native_process::system_directory()?.join(relative),
     ))
 }
 
@@ -494,16 +515,25 @@ fn install_system(config_path: PathBuf) -> Result<()> {
         .context("failed to resolve configuration path")?;
     Config::load(&config_path)?;
     let executable = std::env::current_exe()?;
+    install_system_at(&executable, &config_path)
+}
+
+fn install_system_at(executable: &std::path::Path, config_path: &std::path::Path) -> Result<()> {
+    if !is_elevated()? {
+        bail!("service installation requires Administrator/root");
+    }
+    let config_path = config_path.canonicalize()?;
+    Config::load(&config_path)?;
     if update::reuse_installed_service(&executable.canonicalize()?, &config_path)? {
         println!("Existing localshelld system service is running; registration was preserved.");
         return Ok(());
     }
     #[cfg(target_os = "linux")]
-    install_systemd(&executable, &config_path)?;
+    install_systemd(executable, &config_path)?;
     #[cfg(windows)]
-    install_windows_service(&executable, &config_path)?;
+    install_windows_service(executable, &config_path)?;
     #[cfg(target_os = "macos")]
-    launchd::install(&executable, &config_path)?;
+    launchd::install(executable, &config_path)?;
     println!("localshelld service installed and started.");
     Ok(())
 }

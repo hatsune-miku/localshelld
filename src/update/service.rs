@@ -17,10 +17,18 @@ use super::checked;
 use super::output;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Installed {
+pub(crate) struct Installed {
     pub executable: std::path::PathBuf,
     pub config: std::path::PathBuf,
     pub was_running: bool,
+}
+
+/// Registration metadata only. This can be inspected without opening the
+/// protected configuration; callers must validate it before service changes.
+pub(crate) fn discover(target: &Path) -> Result<Option<Installed>> {
+    registration()?
+        .map(|value| Installed::new(&value.executable, &value.config, target, value.was_running))
+        .transpose()
 }
 
 impl Installed {
@@ -120,7 +128,7 @@ fn open_service(
 }
 
 #[cfg(windows)]
-pub(super) fn discover(target: &Path) -> Result<Option<Installed>> {
+pub(crate) fn registration() -> Result<Option<Installed>> {
     use windows_service::service::{ServiceAccess, ServiceState};
     let Some(service) = open_service(ServiceAccess::QUERY_CONFIG | ServiceAccess::QUERY_STATUS)?
     else {
@@ -138,12 +146,11 @@ pub(super) fn discover(target: &Path) -> Result<Option<Installed>> {
         matches!(state, ServiceState::Running | ServiceState::Stopped),
         "service is transitioning or paused; retry when running/stopped"
     );
-    Ok(Some(Installed::new(
-        Path::new(binary),
-        Path::new(config),
-        target,
-        state == ServiceState::Running,
-    )?))
+    Ok(Some(Installed {
+        executable: binary.into(),
+        config: config.into(),
+        was_running: state == ServiceState::Running,
+    }))
 }
 
 #[cfg(any(windows, test))]
@@ -204,7 +211,7 @@ fn start() -> Result<()> {
 const UNIT: &str = "/etc/systemd/system/localshelld.service";
 
 #[cfg(target_os = "linux")]
-pub(super) fn discover(target: &Path) -> Result<Option<Installed>> {
+pub(crate) fn registration() -> Result<Option<Installed>> {
     if !Path::new("/usr/bin/systemctl").try_exists()? && !Path::new(UNIT).try_exists()? {
         return Ok(None);
     }
@@ -259,12 +266,11 @@ pub(super) fn discover(target: &Path) -> Result<Option<Installed>> {
         matches!(state.trim(), "active" | "inactive" | "failed"),
         "service is transitioning; retry update"
     );
-    Ok(Some(Installed::new(
-        Path::new(&binary),
-        Path::new(&config),
-        target,
-        state.trim() == "active",
-    )?))
+    Ok(Some(Installed {
+        executable: binary.into(),
+        config: config.into(),
+        was_running: state.trim() == "active",
+    }))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -350,7 +356,7 @@ fn launch_state() -> Result<Option<String>> {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn discover(target: &Path) -> Result<Option<Installed>> {
+pub(crate) fn registration() -> Result<Option<Installed>> {
     if !Path::new(PLIST).try_exists()? {
         ensure!(
             launch_state()?.is_none(),
@@ -382,12 +388,11 @@ pub(super) fn discover(target: &Path) -> Result<Option<Installed>> {
         state.is_none() || active,
         "launchd job is loaded but not running; resolve its state before updating"
     );
-    Ok(Some(Installed::new(
-        Path::new(args[0]),
-        Path::new(args[3]),
-        target,
-        active,
-    )?))
+    Ok(Some(Installed {
+        executable: args[0].into(),
+        config: args[3].into(),
+        was_running: active,
+    }))
 }
 
 #[cfg(target_os = "macos")]

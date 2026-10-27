@@ -111,6 +111,13 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn with_status(status: u16, message: String) -> Self {
         Self {
             status: StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),

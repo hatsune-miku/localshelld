@@ -51,6 +51,35 @@ fn validates_portable_uppercase_names_and_bounded_lists() {
 }
 
 #[tokio::test]
+async fn legacy_runtime_names_can_be_removed_but_never_injected() {
+    let (state, token) = state();
+    for key in [
+        "PATH",
+        "NODE_OPTIONS",
+        "DYLD_INSERT_LIBRARIES",
+        "PSMODULEPATH",
+    ] {
+        assert!(state.put_secret(key, "unsafe-override").await.is_err());
+        // Simulate an old local snapshot, not a newly accepted credential.
+        let mut settings = state.settings.lock().await;
+        let sealed = crate::config::seal(b"legacy-value", &settings.seal_key).unwrap();
+        settings.saved.secrets.insert(key.into(), sealed);
+        drop(settings);
+        assert!(state.secret_keys().await.unwrap().contains(&key.into()));
+        assert!(state.resolve_secrets(&[key.into()]).await.is_err());
+        assert!(
+            state
+                .enter_with_secrets(&token, &[key.into()])
+                .await
+                .is_err()
+        );
+        state.remove_secret(key).await.unwrap();
+    }
+    assert!(state.secret_keys().await.unwrap().is_empty());
+    state.shutdown().await;
+}
+
+#[tokio::test]
 async fn values_are_sealed_and_invalid_writes_leave_existing_credentials_intact() {
     let (state, _) = state();
     const VALUE: &str = "fixture-only-value-汉字-123";

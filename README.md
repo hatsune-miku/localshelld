@@ -36,7 +36,7 @@ Agent 判断任务需要本机执行能力
 - 同一个 Rust 二进制支持两种 daemon：系统 daemon 要求 Administrator/root；`--user` daemon 拒绝以 root/管理员身份运行。
 - 令牌是 22 位纯字母数字随机串，约 131 bit 熵；服务端只在内存中保存 SHA-256 哈希和授权元数据。
 - Master Password 使用 Argon2id 保存为不可逆 verifier；TOTP 使用 RFC 6238 SHA-1/6 位/30 秒配置，兼容 Proton Authenticator。
-- TOTP secret 以 AES-256-GCM 加密，配置和 seal key 独立保存并受 ACL 保护：Windows 允许当前账户及 SYSTEM/Administrators，Unix 仅 owner 可访问。
+- TOTP secret 以 AES-256-GCM 加密，配置和 seal key 独立保存并受权限保护：标准系统目录仅允许 SYSTEM/Administrators 或 root；用户配置仅允许当前账户及系统管理员。
 - 默认令牌有效期 24 小时，支持自定义有效期与“永久”（仍随服务重启失效）。
 - 每个 daemon 对同一令牌复用一个 handle；双权限 handle 关联两套独立 shell。handle 为 256 bit CSPRNG 随机值。
 - 命令直接交给平台原生 shell 解析和执行，支持管道、通配符、多行、Unicode、环境变量、函数/变量/目录跨调用保持和原生命令退出码。
@@ -46,12 +46,33 @@ Agent 判断任务需要本机执行能力
 
 ## 前置条件
 
-- Windows 10/11：安装 [PowerShell 7 (`pwsh`)](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
+- Windows 10/11：安装 [PowerShell 7 (`pwsh`)](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) 的系统级版本，向导使用 Program Files 下的 `PowerShell/7/pwsh.exe`
 - Linux：使用 `/bin/bash`，自动安装服务需要 systemd
 - macOS：使用系统 `/bin/bash`（兼容 Bash 3.2）和 launchd；预编译发布包仅提供 Apple Silicon，Intel 不再纳入 CI 和发布流程
 - 从源码构建需要 Rust stable、Node.js 22 与 pnpm 10.14；先构建 Web 资源，再构建 Rust
 - Linux 图形授权需要登录桌面和 WebKitGTK 4.1 / GTK 3；Debian/Ubuntu 构建依赖为 `libwebkit2gtk-4.1-dev libgtk-3-dev libssl-dev pkg-config`
 - Windows 授权窗口使用 Win32 原生控件，不依赖 WebView2；编译 WebAuthn 所需的 OpenSSL 时需要 Perl/NASM
+- 安装向导使用本机浏览器；Windows 使用 UAC，macOS 使用系统管理员授权，Linux 使用 polkit/pkexec。向导本身以普通登录用户身份启动
+
+## 图形化安装与维护
+
+以普通登录用户运行 `localshelld maintenance` 或 `localshelld setup`；无参数启动也会打开向导。Windows 可以直接双击程序。无需另装 WebView 运行时，页面资源嵌入同一个二进制。
+
+向导提供环境检查、初始化、安装或修复、旧安装迁移及服务卸载。安装会请求系统授权并短暂重启服务；两个 daemon 的健康检查和用户服务身份核验通过后才显示完成。首次安装仍需到两个管理页面手动配对，已有密码、TOTP、配对、通行密钥、凭据和授权记忆不重置。
+
+| 平台    | 程序目录                    | 系统配置                                                      |
+| ------- | --------------------------- | ------------------------------------------------------------- |
+| Windows | `Program Files/localshelld` | `ProgramData/localshelld/system/config.toml`                  |
+| macOS   | `/Library/localshelld`      | `/Library/Application Support/localshelld/system/config.toml` |
+| Linux   | `/opt/localshelld`          | `/etc/localshelld/system/config.toml`                         |
+
+Windows 路径由系统 Known Folder API 获取，不采用环境变量覆盖。实际二进制放在程序目录的 `versions/<SHA-256>/` 中；程序目录允许普通用户读取和执行，但不可写。系统配置及备份仅对系统管理员开放。用户配置继续留在当前用户的独立目录。安装不修改 PATH。
+
+迁移读取现有系统服务的注册路径，保留旧程序和配置，并把原配置、授权状态及 seal key 备份到系统数据目录的 `backups/`。迁移会核对状态和密钥内容未改变，仅把系统 shell 固定为系统级绝对路径；旧系统配置副本也会收紧权限。系统安装失败会尝试恢复原服务注册。用户自启动失败会明确报告，可重新执行修复。
+
+安装成功后，Windows 开始菜单、macOS 用户 `Applications` 或 Linux 应用菜单会增加维护入口。卸载仅停止并注销服务，保留程序、配置和备份。`maintenance --no-open` 可只输出本机向导地址；链接是本次进程的临时访问凭据，不应分享。退出向导或 30 分钟后停止监听。
+
+macOS 仍使用 launchd 和 Bash 3.2；授权弹窗走 Tao/Wry 的系统 WebView，Windows 专用 Win32 控件位于独立编译分支。Apple Silicon 仍在 CI 和发布矩阵内，Windows 本地测试不代表 macOS 图形授权已通过实机验证。
 
 ## 构建与初始化
 
@@ -59,15 +80,16 @@ Agent 判断任务需要本机执行能力
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 cargo build --release
-./target/release/localshelld init --totp
+./target/release/localshelld maintenance
 ```
 
-初始化会提示输入并确认 Master Password，不限制长度或字符组合，也接受空密码（输入空行）；空格按原样保留。终端输入使用普通文本回显，网页认证输入框也直接显示文本。密码仍只保存 Argon2id verifier。`--password-stdin` 从标准输入读取一行并省略重复确认，输入流提前结束则报错。使用 `--totp` 时会显示 `otpauth://` URI 和手动 secret，并要求输入当前动态码确认绑定；配置确认成功前不会落盘。
+也可使用 CLI `init` 初始化；系统默认配置已改为上表中的机器目录，写入需要管理员/root 权限。初始化不设置字符组合规则，也接受空密码；空格按原样保留。终端输入使用普通文本回显，网页输入也直接显示文本。密码仍只保存 Argon2id verifier。`--password-stdin` 从标准输入读取一行并省略重复确认，输入流提前结束则报错。CLI `init --totp` 会显示 `otpauth://` URI 和手动 secret，并要求输入当前动态码确认绑定；配置确认成功前不会落盘。图形向导首次初始化后可在管理页面添加 TOTP 和通行密钥。
 
 开发运行（非管理员，仅用于本地验证）：
 
 ```powershell
-./target/release/localshelld serve --allow-unelevated
+./target/release/localshelld init --config ./localshelld.local.toml
+./target/release/localshelld serve --allow-unelevated --config ./localshelld.local.toml
 ```
 
 默认一次安装并立即启动系统 daemon 和当前登录用户的 daemon，随后手动建立互信。Windows 请使用同一登录用户的 Administrator 终端；Linux/macOS 请从该用户的登录会话通过 `sudo` 执行：
@@ -76,17 +98,17 @@ cargo build --release
 ./target/release/localshelld install
 ```
 
-Windows 注册为 `localshelld` 自启动服务并以 LocalSystem 运行；Linux 写入并启用 `localshelld.service`；macOS 写入 `/Library/LaunchDaemons/dev.localshelld.plist`，通过 launchd 以 root 自动运行。服务直接注册当前二进制所在的路径，不搬迁程序，也不要求指定安装目录或目录所有者；实际访问权限由操作系统决定。若初始化和安装使用不同账户，请在两条命令中都传入同一个绝对配置路径：`--config <path>`。二进制应放在稳定路径中，安装后不要移动它。
+Windows 注册为 `localshelld` 自启动服务并以 LocalSystem 运行；Linux 写入并启用 `localshelld.service`；macOS 写入 `/Library/LaunchDaemons/dev.localshelld.plist`，通过 launchd 以 root 自动运行。低层 CLI `install` 仍直接注册当前二进制路径，不负责搬迁和收紧自定义目录；需要标准布局时使用 `maintenance`。若初始化和安装使用不同账户，请在两条命令中都传入同一个绝对配置路径：`--config <path>`。二进制应放在稳定路径中，安装后不要移动它。
 
 安装器同时注册当前用户的登录自启动项，并立即启动用户 daemon（默认 `32120`）。若用户配置不存在，安装阶段就提示设置其独立 Master Password；也可以提前用 `init --user --totp` 初始化。已有用户配置、验证方式、配对密钥和记忆不会被覆盖，不会从系统端复制凭据，也不会自动建立互信。使用非默认用户配置时传入 `--user-config <path>`；已有配置的 `privileged_daemon` 必须指向这次安装的系统端。
 
 两个入口通过健康检查后，安装器才报告安装完成并显示手动配对说明。安装或启动失败会明确报错，不会等到第一次命令执行才启动用户端。已经安装系统端的旧用户可以在原二进制路径再次运行 `install` 补齐用户端：匹配的现有服务/任务会被复用，不重启运行中的进程；路径或配置不一致时保留原注册并报错。确实只需要系统服务的无头主机可显式使用 `install --system-only`，不会猜测登录用户或把用户端以 root/LocalSystem 运行。
 
-macOS 安装示例（先把二进制放到 `/usr/local/bin/localshelld`）：
+macOS 推荐通过普通用户启动向导；高级 CLI 安装示例（先把二进制放到管理员管理的 `/usr/local/bin/localshelld`）：
 
 ```bash
-sudo /usr/local/bin/localshelld init --config /Library/localshelld/config.toml --totp
-sudo /usr/local/bin/localshelld install --config /Library/localshelld/config.toml
+sudo /usr/local/bin/localshelld init --totp
+sudo /usr/local/bin/localshelld install
 # 查看服务状态
 sudo launchctl print system/dev.localshelld
 ```
@@ -130,15 +152,16 @@ Agent 连接 `http://127.0.0.1:32120/mcp`：
 
 ### Windows 执行身份
 
-| `privilege_level` | 实际身份与环境 |
-|---|---|
-| `current-user` | 用户 daemon 的非提权账户和环境 |
-| `as-administrator` | 同一用户的真实管理员令牌，保留该用户的 USERPROFILE、HKCU 和用户 PATH |
-| `nt-authority/system` | LocalSystem；配置目录、HKCU、凭据和环境不属于登录用户 |
+| `privilege_level`     | 实际身份与环境                                                       |
+| --------------------- | -------------------------------------------------------------------- |
+| `current-user`        | 用户 daemon 的非提权账户和环境                                       |
+| `as-administrator`    | 同一用户的真实管理员令牌，保留该用户的 USERPROFILE、HKCU 和用户 PATH |
+| `nt-authority/system` | LocalSystem；配置目录、HKCU、凭据和环境不属于登录用户                |
 
 `as-administrator` 要求已配对的普通用户 daemon 正在运行，且该用户具有可用的 linked administrator token。系统端通过配对加密通道获取用户进程上下文，校验 PID 创建时间、SID 和令牌后启动管理员 shell；没有令牌或权限不足时明确失败，不使用其他管理员账户或 SYSTEM 顶替。运行于非交互环境，不承诺映射网络驱动器或交互桌面可用。保留操作系统用户 profile 不等于执行 PowerShell 的 `$PROFILE` 脚本：仍使用 `-NoProfile`。
 
 Windows run 不再接受 `sudo`，也不接受 `root`。手动以普通管理员运行的系统 daemon 不是 SYSTEM，不能执行 `nt-authority/system`；安装为 LocalSystem 服务才提供该身份。Linux/macOS 保持 `sudo:false` 当前用户、`sudo:true` root，不接受 `privilege_level`。升级时两端 daemon 应使用相同版本。
+
 - 销毁双权限会话会终止两个 shell。高权限令牌撤销、到期、系统 daemon 关闭或通信失败会关闭其关联的用户 shell；正在运行的命令也会取消。用户态独立令牌不受系统 daemon 重启影响。
 
 用户 daemon 向系统 daemon 传递用户交给它的令牌与命令。Master Password 和 TOTP 用于各自本地页面的签发与管理；执行接口使用 token 和 handle。两种身份的可访问资源由操作系统账户权限决定。
@@ -244,7 +267,12 @@ Windows 当前用户执行：`run({"handle":"…","command":"whoami","privilege_
 Agent 可匿名调用 `secrets_list({})`，再把需要的 key 交给任一 enter：
 
 ```json
-{"agent_name":"Example Agent","request_reason":"查询用户指定的 Jenkins 构建。","confirm_text":"OK","secret_keys":["JENKINS_CI_TOKEN"]}
+{
+  "agent_name": "Example Agent",
+  "request_reason": "查询用户指定的 Jenkins 构建。",
+  "confirm_text": "OK",
+  "secret_keys": ["JENKINS_CI_TOKEN"]
+}
 ```
 
 授权窗口显示请求的 key 列表。预授权仍使用原执行 token，无需单独的凭据令牌。后续 shell 命令直接引用 `$env:JENKINS_CI_TOKEN`（PowerShell）或 `$JENKINS_CI_TOKEN`（Bash）；同一会话各执行身份的 shell 均自动注入所选凭据。新增 key 不会沿用尚未覆盖它的记忆允许。
@@ -255,16 +283,16 @@ Agent 可匿名调用 `secrets_list({})`，再把需要的 key 交给任一 ente
 
 本机写操作使用 `POST application/json`，避免把 token 或 handle 写入访问日志。完整示例见 [docs/API.md](docs/API.md)。
 
-| 路径 | 请求核心字段 | 用途 |
-|---|---|---|
-| `/v1/secrets/keys` | 无，GET | 列出凭据 key |
-| `/v1/sessions/enter` | `token`、可选 `secret_keys` | 建立或复用令牌的会话 |
-| `/v1/commands/run` | `handle`, `command`, Windows `privilege_level` / Unix `sudo`，可选 `stdin` | 显式选择执行身份 |
-| `/v1/sessions/destroy` | `handle` | 终止会话 |
-| `/v1/tokens/revoke` | `token` | 撤销令牌并终止会话 |
-| `/v1/admin/tokens/issue` | `credential`, duration | 签发令牌 |
-| `/v1/admin/tokens/list` | `credential` | 列出当前运行期元数据 |
-| `/v1/admin/tokens/revoke` | `credential`, `id` | 由用户撤销指定令牌 |
+| 路径                      | 请求核心字段                                                               | 用途                 |
+| ------------------------- | -------------------------------------------------------------------------- | -------------------- |
+| `/v1/secrets/keys`        | 无，GET                                                                    | 列出凭据 key         |
+| `/v1/sessions/enter`      | `token`、可选 `secret_keys`                                                | 建立或复用令牌的会话 |
+| `/v1/commands/run`        | `handle`, `command`, Windows `privilege_level` / Unix `sudo`，可选 `stdin` | 显式选择执行身份     |
+| `/v1/sessions/destroy`    | `handle`                                                                   | 终止会话             |
+| `/v1/tokens/revoke`       | `token`                                                                    | 撤销令牌并终止会话   |
+| `/v1/admin/tokens/issue`  | `credential`, duration                                                     | 签发令牌             |
+| `/v1/admin/tokens/list`   | `credential`                                                               | 列出当前运行期元数据 |
+| `/v1/admin/tokens/revoke` | `credential`, `id`                                                         | 由用户撤销指定令牌   |
 
 ## 配置
 

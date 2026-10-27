@@ -10,6 +10,10 @@ use anyhow::{Context, Result, bail, ensure};
 mod windows_uninstall;
 
 pub fn install(config: &Path) -> Result<()> {
+    install_at(&std::env::current_exe()?, config)
+}
+
+pub(crate) fn install_at(executable: &Path, config: &Path) -> Result<()> {
     let config = config
         .canonicalize()
         .context("failed to resolve user configuration")?;
@@ -17,8 +21,7 @@ pub fn install(config: &Path) -> Result<()> {
     if loaded.bind == loaded.privileged_daemon {
         bail!("user and privileged daemon addresses must differ");
     }
-    let executable = std::env::current_exe()?;
-    for path in [&executable, &config] {
+    for path in [executable, &config] {
         let value = path
             .to_str()
             .context("service paths must be valid Unicode")?;
@@ -26,7 +29,7 @@ pub fn install(config: &Path) -> Result<()> {
             bail!("service paths must not contain control characters");
         }
     }
-    install_native(&executable, &config)?;
+    install_native(executable, &config)?;
     println!("localshelld user daemon installed and started for this user.");
     Ok(())
 }
@@ -48,15 +51,19 @@ pub fn uninstall() -> Result<()> {
 /// A responding port alone is insufficient: a foreground process might already
 /// own it while the newly installed autostart daemon failed to start.
 pub fn verify_running(config: &Path) -> Result<()> {
+    verify_running_at(&std::env::current_exe()?, config)
+}
+
+pub(crate) fn verify_running_at(executable: &Path, config: &Path) -> Result<()> {
     #[cfg(windows)]
     let running = {
         let sid = sid()?;
-        let document = scheduled_task(&std::env::current_exe()?, &config.canonicalize()?, &sid);
+        let document = scheduled_task(executable, &config.canonicalize()?, &sid);
         existing_task(&format!("localshelld-user-{sid}"), &document)? == "running"
     };
     #[cfg(target_os = "linux")]
     let running = {
-        let _ = config;
+        let _ = (config, executable);
         Command::new("systemctl")
             .args(["--user", "is-active", "--quiet", "localshelld-user.service"])
             .status()?
@@ -64,7 +71,7 @@ pub fn verify_running(config: &Path) -> Result<()> {
     };
     #[cfg(target_os = "macos")]
     let running = {
-        let _ = config;
+        let _ = (config, executable);
         let output = Command::new("/bin/launchctl")
             .args(["print", &format!("{}/dev.localshelld.user", domain()?)])
             .output()?;

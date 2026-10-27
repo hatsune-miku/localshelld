@@ -11,6 +11,7 @@ export default defineConfig({
         main: resolve(import.meta.dirname, 'index.html'),
         consent: resolve(import.meta.dirname, 'consent.html'),
         sync: resolve(import.meta.dirname, 'sync.html'),
+        maintenance: resolve(import.meta.dirname, 'maintenance.html'),
       },
     },
   },

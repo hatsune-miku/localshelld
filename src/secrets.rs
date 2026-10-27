@@ -47,7 +47,7 @@ pub fn normalize_keys(keys: &[String]) -> Result<Vec<String>, ApiError> {
         ));
     }
     for key in keys {
-        validate_key(key)?;
+        localshelld_sync_protocol::validate_injection_key(key).map_err(ApiError::bad_request)?;
     }
     let mut keys = keys.to_vec();
     keys.sort();
@@ -87,7 +87,7 @@ impl AppState {
     }
 
     pub(crate) async fn put_secret(&self, key: &str, value: &str) -> Result<(), ApiError> {
-        validate_key(key)?;
+        localshelld_sync_protocol::validate_injection_key(key).map_err(ApiError::bad_request)?;
         if value.is_empty() || value.len() > MAX_VALUE_BYTES || value.contains('\0') {
             return Err(ApiError::bad_request(
                 "value must contain 1–16384 bytes without NUL",

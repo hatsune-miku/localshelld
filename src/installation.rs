@@ -134,7 +134,7 @@ fn health_matches(bytes: &[u8], daemon: &str) -> bool {
     })
 }
 
-fn wait_healthy(address: SocketAddr, daemon: &str, timeout: Duration) -> Result<()> {
+pub(crate) fn wait_healthy(address: SocketAddr, daemon: &str, timeout: Duration) -> Result<()> {
     ensure!(
         address.ip().is_loopback(),
         "health checks require a loopback address"

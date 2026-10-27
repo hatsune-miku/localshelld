@@ -114,6 +114,11 @@ impl Config {
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
+    Ok(crate::paths::MachinePaths::resolve()?.config)
+}
+
+/// Only for explicit migration, never a fallback for a privileged service.
+pub fn legacy_config_path() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("dev", "localshelld", "localshelld")
         .context("unable to determine the platform configuration directory")?;
     Ok(dirs.config_dir().join("config.toml"))
@@ -207,30 +212,15 @@ pub(crate) fn set_private_dir(path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 fn restrict_windows_acl(path: &Path, directory: bool) -> Result<()> {
-    use crate::process::background_command;
-    let output = background_command("whoami")
-        .output()
-        .context("failed to determine the current Windows principal")?;
-    if !output.status.success() {
-        bail!("whoami could not determine the current Windows principal");
-    }
-    let principal = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let inheritance = if directory { "(OI)(CI)(F)" } else { "(F)" };
-    let system = format!("*S-1-5-18:{inheritance}");
-    let administrators = format!("*S-1-5-32-544:{inheritance}");
-    let current_user = format!("{principal}:{inheritance}");
-    let status = background_command("icacls")
-        .arg(path)
-        .args(["/inheritance:r", "/grant:r"])
-        .args([system, administrators, current_user])
-        .status()
-        .context("failed to start icacls")?;
-    if !status.success() {
-        bail!(
-            "icacls could not restrict permissions on {}",
-            path.display()
-        );
-    }
+    use localshelld_native_process::{FileAccess, restrict_path};
+    let resolved = path.canonicalize()?;
+    let access = if crate::paths::MachinePaths::resolve()?.contains_system_state(&resolved) {
+        FileAccess::System
+    } else {
+        FileAccess::Private
+    };
+    restrict_path(path, directory, access)
+        .with_context(|| format!("could not restrict permissions on {}", path.display()))?;
     Ok(())
 }
 

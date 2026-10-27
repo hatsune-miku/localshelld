@@ -10,6 +10,7 @@ pub mod execution;
 pub(crate) mod management;
 pub mod mcp;
 mod mcp_text;
+pub mod paths;
 mod peer;
 pub mod process;
 pub(crate) mod secrets;

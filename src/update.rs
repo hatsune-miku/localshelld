@@ -1,5 +1,5 @@
 //! Explicit, CLI-only updates. No service exposes an update endpoint.
-mod service;
+pub(crate) mod service;
 
 use std::{
     fs::{self, File, OpenOptions},

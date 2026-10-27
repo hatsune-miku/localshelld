@@ -83,6 +83,8 @@ impl Process {
         max_output_bytes: usize,
         environment: &std::collections::BTreeMap<String, String>,
     ) -> Result<Self, ShellError> {
+        localshelld_sync_protocol::validate_injection_credentials(environment)
+            .map_err(ShellError::Rejected)?;
         #[cfg(windows)]
         if kind == ShellKind::PowerShell {
             return Self::spawn_windows(executable, max_output_bytes, None, environment);
@@ -122,6 +124,8 @@ impl Process {
         context: &localshelld_native_process::UserContext,
         environment: &std::collections::BTreeMap<String, String>,
     ) -> Result<Self, ShellError> {
+        localshelld_sync_protocol::validate_injection_credentials(environment)
+            .map_err(ShellError::Rejected)?;
         Self::spawn_windows(executable, max_output_bytes, Some(context), environment)
     }
     #[cfg(windows)]

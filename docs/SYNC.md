@@ -4,6 +4,8 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 
 参考实现位于 `crates/sync-server`，共享数据类型与校验位于 `crates/sync-protocol`。实现采用单实例、单所有者模型；不同客户端可以按本文独立实现。
 
+本机凭据注入另有保留环境变量限制：PATH、HOME、系统目录、动态加载器、运行时启动钩子及代理等控制变量不可通过凭据创建、导入或注入。旧同步快照可以读取和移除这些键，但执行器仍会拒绝注入；服务端兼容读取不代表客户端允许执行。
+
 ## 使用
 
 1. 在本机“凭据”页导出需要保留的数据。
@@ -43,7 +45,7 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 `GET /sync/v1/info` 无需认证：
 
 ```json
-{"protocol":1,"initialized":false,"origin":"https://sync.example.com"}
+{ "protocol": 1, "initialized": false, "origin": "https://sync.example.com" }
 ```
 
 ## 初始化和通行密钥
@@ -55,7 +57,7 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 `POST /passkeys/register/start`：
 
 ```json
-{"name":"我的通行密钥","bootstrap_code":"<INITIALIZATION_CODE>"}
+{ "name": "我的通行密钥", "bootstrap_code": "<INITIALIZATION_CODE>" }
 ```
 
 初始化后，不再接受初始化码授权。添加通行密钥需要有效的浏览器登录 JWT，`bootstrap_code` 可以省略。设备同步 JWT 不能添加或移除通行密钥。
@@ -66,11 +68,13 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 
 ```json
 {
-  "challenge_id":"...",
-  "credential":{
-    "id":"...","rawId":"...","type":"public-key",
-    "response":{"attestationObject":"...","clientDataJSON":"...","transports":["internal"]},
-    "extensions":{}
+  "challenge_id": "...",
+  "credential": {
+    "id": "...",
+    "rawId": "...",
+    "type": "public-key",
+    "response": { "attestationObject": "...", "clientDataJSON": "...", "transports": ["internal"] },
+    "extensions": {}
   }
 }
 ```
@@ -87,11 +91,13 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 
 ```json
 {
-  "challenge_id":"...",
-  "credential":{
-    "id":"...","rawId":"...","type":"public-key",
-    "response":{"authenticatorData":"...","clientDataJSON":"...","signature":"...","userHandle":null},
-    "extensions":{}
+  "challenge_id": "...",
+  "credential": {
+    "id": "...",
+    "rawId": "...",
+    "type": "public-key",
+    "response": { "authenticatorData": "...", "clientDataJSON": "...", "signature": "...", "userHandle": null },
+    "extensions": {}
   }
 }
 ```
@@ -104,10 +110,10 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 
 ```json
 {
-  "access_token":"<JWT>",
-  "refresh_token":"<OPAQUE_REFRESH_TOKEN>",
-  "expires_at":1900000300,
-  "refresh_expires_at":1902592000
+  "access_token": "<JWT>",
+  "refresh_token": "<OPAQUE_REFRESH_TOKEN>",
+  "expires_at": 1900000300,
+  "refresh_expires_at": 1902592000
 }
 ```
 
@@ -127,11 +133,11 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 
    ```json
    {
-     "device_code":"<PRIVATE_DEVICE_CODE>",
-     "user_code":"A1B2C3D4E5F6",
-     "verification_uri":"https://sync.example.com/#device=A1B2C3D4E5F6",
-     "expires_in":600,
-     "interval":3
+     "device_code": "<PRIVATE_DEVICE_CODE>",
+     "user_code": "A1B2C3D4E5F6",
+     "verification_uri": "https://sync.example.com/#device=A1B2C3D4E5F6",
+     "expires_in": 600,
+     "interval": 3
    }
    ```
 
@@ -153,13 +159,13 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 `GET /vault` 要求有效浏览器或设备 JWT，返回：
 
 ```json
-{"revision":7,"credentials":{"JENKINS_CI_TOKEN":"...","OPENAI_API_KEY":"..."}}
+{ "revision": 7, "credentials": { "JENKINS_CI_TOKEN": "...", "OPENAI_API_KEY": "..." } }
 ```
 
 `PUT /vault`：
 
 ```json
-{"expected_revision":7,"credentials":{"JENKINS_CI_TOKEN":"new value"}}
+{ "expected_revision": 7, "credentials": { "JENKINS_CI_TOKEN": "new value" } }
 ```
 
 这是整库替换，不是 merge；示例会删除未包含的 `OPENAI_API_KEY`。成功返回新完整快照，例如 `revision:8`。空对象清空库。版本不匹配返回 409，任何写入都不发生。
@@ -178,9 +184,9 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 
 ```json
 {
-  "format":"localshelld-credentials",
-  "version":1,
-  "credentials":{"EXAMPLE_TOKEN":"example value"}
+  "format": "localshelld-credentials",
+  "version": 1,
+  "credentials": { "EXAMPLE_TOKEN": "example value" }
 }
 ```
 
