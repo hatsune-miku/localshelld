@@ -1,12 +1,16 @@
 //! Telegram is a presentation channel, never an execution endpoint. Decisions
 //! are candidates until the requesting device's single arbiter acknowledges one.
 #![forbid(unsafe_code)]
+#[cfg(feature = "bot")]
 mod api;
+#[cfg(feature = "bot")]
 mod service;
 
+#[cfg(feature = "bot")]
 pub use api::Api;
 pub use localshelld_sync_protocol::{TelegramBinding as Binding, TelegramConfig as Config};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "bot")]
 pub use service::Service;
 
 pub type Result<T> = std::result::Result<T, &'static str>;

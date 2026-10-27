@@ -80,6 +80,16 @@ export function TelegramSettings({ session }: { session: string }) {
       await refresh()
     }, 'Telegram 设置已保存。')
   }
+  if (status?.mode === 'offline') {
+    return (
+      <section className="desktop-section telegram-settings">
+        <h3 className="subsection-title">Telegram 授权</h3>
+        <p className="description" role="status">
+          请先在云同步中连接云服务。
+        </p>
+      </section>
+    )
+  }
   return (
     <section className="desktop-section telegram-settings">
       <h3 className="subsection-title">Telegram 授权</h3>
@@ -89,7 +99,7 @@ export function TelegramSettings({ session }: { session: string }) {
         <p className="telegram-status" role="status">
           {status.configured ? `@${status.bot_username} · ${status.binding ? '已绑定' : '未绑定'}` : '尚未配置 bot'}
           {' · '}
-          {status.mode === 'cloud' ? `云同步 · 版本 ${status.revision}` : '本机配置'}
+          {`云端中转 · 版本 ${status.revision}`}
         </p>
       )}
       {status?.error && (

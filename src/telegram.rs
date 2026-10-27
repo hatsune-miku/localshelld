@@ -6,7 +6,7 @@ use crate::{
     settings::Settings,
 };
 pub use localshelld_telegram::Action;
-use localshelld_telegram::{Api, Completion, Config, Service};
+use localshelld_telegram::{Completion, Config};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -59,138 +59,37 @@ impl AppState {
             )
             .await;
         }
-        let cloud = self.settings.lock().await.saved.sync.is_some();
-        if cloud {
-            self.telegram
-                .configure(None)
-                .await
-                .map_err(ApiError::bad_request)?;
-            let revision = self.read_vault().await?.revision;
-            let result = self
-                .telegram_cloud_request(
-                    "telegram",
-                    json!({"expected_revision":revision,"command":action}),
-                    Duration::from_secs(30),
-                )
-                .await?;
-            if result["saved"] == true || result["bound"] == true || result["removed"] == true {
-                self.read_vault().await?;
-            }
-            let mut result = result;
+        if self.settings.lock().await.saved.sync.is_none() {
             if matches!(action, Action::Status) {
-                result["mode"] = json!("cloud");
-                result["revision"] = json!(revision);
+                return Ok(json!({
+                    "configured":false,"enabled":false,"bot_username":null,
+                    "binding":null,"mode":"offline","error":null
+                }));
             }
-            return Ok(result);
+            return Err(ApiError::unavailable("Telegram 授权需要先连接云服务。"));
         }
-        // The lock order is sync -> Telegram configuration -> settings.
-        let _sync = self.sync.lock().await;
-        let _serial = self.telegram_config_lock.lock().await;
-        let config = {
-            let settings = self.settings.lock().await;
-            if settings.saved.sync.is_some() {
-                return Err(ApiError::conflict("storage mode changed; retry"));
-            }
-            read_config(&settings)?
-        };
-        self.telegram
-            .configure(config.clone())
-            .await
-            .map_err(ApiError::bad_request)?;
-        match &action {
-            Action::Status => {
-                let mut status = self.telegram.status().await;
-                status["mode"] = json!("offline");
-                Ok(status)
-            }
-            Action::Configure { token, enabled } => {
-                let mut next = if let Some(token) = token {
-                    let username = Api::default()
-                        .verify(token)
-                        .await
-                        .map_err(ApiError::bad_request)?;
-                    Config {
-                        bot_token: token.clone(),
-                        bot_username: username,
-                        enabled: *enabled,
-                        binding: config
-                            .as_ref()
-                            .filter(|c| c.bot_token == *token)
-                            .and_then(|c| c.binding.clone()),
-                    }
-                } else {
-                    config.ok_or_else(|| ApiError::bad_request("请先保存 Bot Token。"))?
-                };
-                next.enabled = *enabled;
-                self.save_local_telegram(Some(next)).await?;
-                Ok(json!({"saved":true}))
-            }
-            Action::Remove => {
-                self.save_local_telegram(None).await?;
-                Ok(json!({"removed":true}))
-            }
-            Action::BindStart { code } => self
-                .telegram
-                .begin_binding(owner, code.as_deref())
-                .await
-                .map_err(ApiError::bad_request),
-            Action::BindPoll { code } => {
-                if let Some(binding) = self
-                    .telegram
-                    .binding(owner, code)
-                    .await
-                    .map_err(ApiError::bad_request)?
-                {
-                    let mut config =
-                        config.ok_or_else(|| ApiError::bad_request("Bot was removed"))?;
-                    config.binding = Some(binding);
-                    self.save_local_telegram(Some(config)).await?;
-                    Ok(json!({"bound":true}))
-                } else {
-                    Ok(json!({"pending":true}))
-                }
-            }
-            Action::Test => {
-                self.telegram
-                    .test_message()
-                    .await
-                    .map_err(ApiError::bad_request)?;
-                Ok(json!({"sent":true}))
-            }
+        let revision = self.read_vault().await?.revision;
+        let mut result = self
+            .telegram_cloud_request(
+                "telegram",
+                json!({"expected_revision":revision,"command":action}),
+                Duration::from_secs(30),
+            )
+            .await?;
+        if result["saved"] == true || result["bound"] == true || result["removed"] == true {
+            self.read_vault().await?;
         }
-    }
-    async fn save_local_telegram(&self, config: Option<Config>) -> Result<(), ApiError> {
-        let mut settings = self.settings.lock().await;
-        let mut next = settings.saved.clone();
-        next.telegram = encrypt_config(&settings, config.as_ref())?;
-        settings.save(next).await?;
-        drop(settings);
-        self.telegram
-            .configure(config)
-            .await
-            .map_err(ApiError::bad_request)
+        if matches!(action, Action::Status) {
+            result["mode"] = json!("cloud");
+            result["revision"] = json!(revision);
+        }
+        Ok(result)
     }
     async fn telegram_backend(&self) -> Result<Backend, ApiError> {
-        let _serial = self.telegram_config_lock.lock().await;
-        let (cloud, config) = {
-            let settings = self.settings.lock().await;
-            (settings.saved.sync.is_some(), read_config(&settings)?)
-        };
-        if cloud {
-            self.telegram
-                .configure(None)
-                .await
-                .map_err(ApiError::bad_request)?;
-            return Ok(Backend::Cloud(self.clone()));
+        if self.settings.lock().await.saved.sync.is_none() {
+            return Err(ApiError::unavailable("Telegram 授权需要先连接云服务。"));
         }
-        let config = config
-            .filter(|c| c.enabled && c.binding.is_some())
-            .ok_or_else(|| ApiError::unavailable("Telegram is not configured"))?;
-        self.telegram
-            .configure(Some(config))
-            .await
-            .map_err(ApiError::bad_request)?;
-        Ok(Backend::Local(self.telegram.clone()))
+        Ok(Backend(self.clone()))
     }
     pub(crate) async fn request_consent(&self, prompt: Prompt) -> Result<Decision, ApiError> {
         crate::consent::validate_request(&prompt.agent_name, &prompt.request_reason)?;
@@ -240,70 +139,46 @@ impl AppState {
     }
 }
 
-enum Backend {
-    Local(Service),
-    Cloud(AppState),
-}
+// Devices relay only to their authenticated cloud service. Bot API access and
+// the singleton update worker are compiled into the sync server, not the daemon.
+struct Backend(AppState);
 impl Backend {
     async fn create(&self, prompt: Prompt) -> Result<(), ApiError> {
         let device = std::env::var("COMPUTERNAME")
             .or_else(|_| std::env::var("HOSTNAME"))
             .unwrap_or_else(|_| "localshelld device".into());
-        match self {
-            Self::Local(service) => service
-                .create("local-consent", &device, prompt)
-                .await
-                .map_err(ApiError::unavailable),
-            Self::Cloud(state) => state
-                .telegram_cloud_request(
-                    "telegram/request",
-                    json!({"prompt":prompt,"device":device}),
-                    Duration::from_secs(25),
-                )
-                .await
-                .map(|_| ()),
-        }
+        self.0
+            .telegram_cloud_request(
+                "telegram/request",
+                json!({"prompt":prompt,"device":device}),
+                Duration::from_secs(25),
+            )
+            .await
+            .map(|_| ())
     }
     async fn poll(&self, id: &str) -> Result<Option<Decision>, ApiError> {
-        match self {
-            Self::Local(service) => service
-                .poll("local-consent", id)
-                .await
-                .map_err(ApiError::unavailable),
-            Self::Cloud(state) => {
-                let result = state
-                    .telegram_cloud_request(
-                        "telegram/poll",
-                        json!({"id":id}),
-                        Duration::from_secs(25),
-                    )
-                    .await?;
-                serde_json::from_value(result["decision"].clone())
-                    .map_err(|_| ApiError::unavailable("invalid Telegram relay response"))
-            }
-        }
+        let result = self
+            .0
+            .telegram_cloud_request("telegram/poll", json!({"id":id}), Duration::from_secs(25))
+            .await?;
+        serde_json::from_value(result["decision"].clone())
+            .map_err(|_| ApiError::unavailable("invalid Telegram relay response"))
     }
     async fn finish(&self, id: &str, completion: Completion) {
-        match self {
-            Self::Local(service) => {
-                let _ = service.finish("local-consent", id, completion).await;
+        for attempt in 0..3 {
+            if self
+                .0
+                .telegram_cloud_request(
+                    "telegram/finish",
+                    json!({"id":id,"completion":completion}),
+                    Duration::from_secs(10),
+                )
+                .await
+                .is_ok()
+            {
+                break;
             }
-            Self::Cloud(state) => {
-                for attempt in 0..3 {
-                    if state
-                        .telegram_cloud_request(
-                            "telegram/finish",
-                            json!({"id":id,"completion":completion}),
-                            Duration::from_secs(10),
-                        )
-                        .await
-                        .is_ok()
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
-                }
-            }
+            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
         }
     }
 }

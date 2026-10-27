@@ -49,7 +49,7 @@ enum CommandKind {
     /// Internal, one-shot installer. Never exposed by either daemon.
     #[command(hide = true)]
     MaintenanceApply { plan: PathBuf, digest: String },
-    /// Configure Telegram from one token line on stdin; stop this daemon first.
+    /// Configure cloud-hosted Telegram from stdin; connect cloud and stop this daemon first.
     ConfigureTelegram {
         #[arg(long)]
         user: bool,
@@ -208,8 +208,11 @@ async fn run_command(command: CommandKind) -> Result<()> {
                 AppState::new(config, auth)
             }
             .with_storage(path)?;
-            let token = Zeroizing::new(read_input_line(&mut io::stdin().lock())?);
             use localshelld::telegram::Action;
+            if state.telegram_action("local-cli", Action::Status).await?["mode"] != "cloud" {
+                bail!("Telegram authorization requires a cloud connection");
+            }
+            let token = Zeroizing::new(read_input_line(&mut io::stdin().lock())?);
             state
                 .telegram_action(
                     "local-cli",

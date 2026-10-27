@@ -136,10 +136,10 @@ async fn encrypted_configuration_does_not_enter_credential_exports() {
         enabled: false,
         binding: None,
     };
-    state
-        .save_local_telegram(Some(config.clone()))
-        .await
-        .unwrap();
+    {
+        let mut settings = state.settings.lock().await;
+        settings.saved.telegram = encrypt_config(&settings, Some(&config)).unwrap();
+    }
     let settings = state.settings.lock().await;
     assert!(read_config(&settings).unwrap().is_some());
     assert!(
@@ -149,5 +149,84 @@ async fn encrypted_configuration_does_not_enter_credential_exports() {
     );
     drop(settings);
     assert!(state.export_secrets().await.unwrap().credentials.is_empty());
+    state.shutdown().await;
+}
+
+#[tokio::test]
+async fn offline_cache_never_enables_telegram_or_accepts_bot_actions() {
+    let state = AppState::new(
+        config::Config::default(),
+        AuthManager::new("unused".into(), None),
+    );
+    let cached = Config {
+        bot_token: "123456:abcdefghijklmnopqrstuvwxyz".into(),
+        bot_username: "fixture_bot".into(),
+        enabled: true,
+        binding: Some(localshelld_telegram::Binding {
+            user_id: 42,
+            chat_id: 42,
+        }),
+    };
+    {
+        let mut settings = state.settings.lock().await;
+        settings.saved.telegram = encrypt_config(&settings, Some(&cached)).unwrap();
+    }
+    let status = state.telegram_action("test", Action::Status).await.unwrap();
+    assert_eq!(status["mode"], "offline");
+    assert_eq!(status["configured"], false);
+    assert_eq!(status["enabled"], false);
+    assert!(state.telegram_backend().await.is_err());
+    for action in [
+        Action::Configure {
+            token: Some(cached.bot_token.clone()),
+            enabled: true,
+        },
+        Action::Configure {
+            token: None,
+            enabled: true,
+        },
+        Action::Remove,
+        Action::BindStart { code: None },
+        Action::BindPoll {
+            code: "unused".into(),
+        },
+        Action::Test,
+    ] {
+        let error = state.telegram_action("test", action).await.unwrap_err();
+        assert!(error.to_string().contains("需要先连接云服务"));
+    }
+    assert!(read_config(&*state.settings.lock().await).unwrap() == Some(cached));
+    state.shutdown().await;
+}
+
+#[tokio::test]
+async fn offline_telegram_does_not_prevent_desktop_consent() {
+    let broker = ConsentBroker::new(|event| {
+        if let DesktopEvent::Show(_, reply) = event {
+            let _ = reply.send(Decision {
+                choice: Choice::Accept,
+                remember: false,
+                btw: String::new(),
+            });
+        }
+        Ok(())
+    });
+    let state = AppState::new(
+        config::Config::default(),
+        AuthManager::new("unused".into(), None),
+    )
+    .with_consent(broker);
+    let result = state
+        .request_consent(Prompt {
+            id: "offline-desktop".into(),
+            agent_name: "test".into(),
+            request_reason: "test only".into(),
+            scope: "user".into(),
+            secret_keys: vec![],
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.choice, Choice::Accept);
     state.shutdown().await;
 }

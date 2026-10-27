@@ -67,6 +67,45 @@ async fn setup() -> (Service, Fixture, tokio::task::JoinHandle<()>) {
         Some(tokio::spawn(std::future::pending::<()>()).abort_handle());
     (service, fixture, server)
 }
+#[tokio::test]
+async fn concurrent_device_configuration_reuses_one_update_worker() {
+    let (service, _, server) = setup().await;
+    let worker = service
+        .inner
+        .state
+        .lock()
+        .await
+        .worker
+        .as_ref()
+        .unwrap()
+        .id();
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let clone = service.clone();
+        tasks.push(tokio::spawn(async move {
+            clone.configure(Some(config())).await.unwrap();
+            clone.ensure_worker().await;
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+    assert_eq!(
+        service
+            .inner
+            .state
+            .lock()
+            .await
+            .worker
+            .as_ref()
+            .unwrap()
+            .id(),
+        worker
+    );
+    service.stop().await;
+    server.abort();
+}
+
 async fn click(service: &Service, id: &str, action: &str, user: i64, message: i64) {
     service.update(0,json!({"callback_query":{"id":"query","data":format!("{id}:{action}"),"from":{"id":user,"is_bot":false},"message":{"message_id":message,"chat":{"id":user,"type":"private"}}}})).await;
 }

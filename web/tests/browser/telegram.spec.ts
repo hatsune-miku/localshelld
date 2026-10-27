@@ -50,7 +50,7 @@ test('configure, bind, test and remove Telegram with a cloud status and no token
     await route.fulfill({ json: result })
   })
   await login(page)
-  await expect(page.getByText('尚未配置 bot · 云同步 · 版本 7')).toBeVisible()
+  await expect(page.getByText('尚未配置 bot · 云端中转 · 版本 7')).toBeVisible()
   await page.getByLabel('Bot Token', { exact: true }).fill('123456:fixture-token-not-a-real-secret')
   await page.getByRole('button', { name: '保存 Telegram 设置', exact: true }).click()
   await expect(page.getByLabel('Bot Token', { exact: true })).toHaveValue('')
@@ -59,7 +59,7 @@ test('configure, bind, test and remove Telegram with a cloud status and no token
     'href',
     'https://t.me/fixture_bot?start=abcdef'
   )
-  await expect(page.getByText('@fixture_bot · 已绑定 · 云同步 · 版本 7')).toBeVisible()
+  await expect(page.getByText('@fixture_bot · 已绑定 · 云端中转 · 版本 7')).toBeVisible()
   await page.getByRole('button', { name: '发送测试消息' }).click()
   await expect(page.getByText('测试消息已发送。')).toBeVisible()
   await page.getByRole('button', { name: '保存 Telegram 设置', exact: true }).click()
@@ -70,7 +70,7 @@ test('configure, bind, test and remove Telegram with a cloud status and no token
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.screenshot({ path: 'test-results/telegram-settings-mobile.png', fullPage: true })
   await page.getByRole('button', { name: '移除 Telegram 配置' }).click()
-  await expect(page.getByText('尚未配置 bot · 云同步 · 版本 7')).toBeVisible()
+  await expect(page.getByText('尚未配置 bot · 云端中转 · 版本 7')).toBeVisible()
 })
 
 test('shows configuration errors without clearing an unsaved token', async ({ page }) => {
@@ -78,7 +78,7 @@ test('shows configuration errors without clearing an unsaved token', async ({ pa
     const command = route.request().postDataJSON()
     await route.fulfill(
       command.action === 'status'
-        ? { json: { configured: false, enabled: false, mode: 'offline' } }
+        ? { json: { configured: false, enabled: false, mode: 'cloud', revision: 0 } }
         : { status: 400, json: { error: 'Telegram Bot Token 无效。' } }
     )
   })
@@ -87,4 +87,18 @@ test('shows configuration errors without clearing an unsaved token', async ({ pa
   await page.getByRole('button', { name: '保存 Telegram 设置', exact: true }).click()
   await expect(page.getByText('Telegram Bot Token 无效。')).toBeVisible()
   await expect(page.getByLabel('Bot Token', { exact: true })).toHaveValue('invalid-fixture')
+})
+
+test('offline mode requires cloud connection and exposes no bot controls', async ({ page }) => {
+  const commands: string[] = []
+  await page.route('**/v1/admin/telegram', async (route) => {
+    commands.push(route.request().postDataJSON().action)
+    await route.fulfill({ json: { configured: false, enabled: false, mode: 'offline' } })
+  })
+  await login(page)
+  await expect(page.getByText('请先在云同步中连接云服务。')).toBeVisible()
+  await expect(page.getByLabel('Bot Token', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '保存 Telegram 设置', exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('启用 Telegram 授权')).toHaveCount(0)
+  expect(commands).toEqual(['status'])
 })

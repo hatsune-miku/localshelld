@@ -50,6 +50,15 @@ async fn setup() -> (tempfile::TempDir, App, Router, Tokens, Tokens) {
     (directory, app, router, browser, device)
 }
 
+#[test]
+fn second_server_cannot_start_a_competing_bot_worker_on_the_same_store() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = App::open(directory.path(), "https://sync.example.com").unwrap();
+    assert!(App::open(directory.path(), "https://sync.example.com").is_err());
+    drop(first);
+    assert!(App::open(directory.path(), "https://sync.example.com").is_ok());
+}
+
 #[tokio::test]
 async fn telegram_configuration_is_private_cas_persisted_and_legacy_compatible() {
     let (directory, state, app, _, device) = setup().await;

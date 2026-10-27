@@ -253,14 +253,7 @@ impl AppState {
     }
 
     async fn save_snapshot_locked(&self, snapshot: &Snapshot) -> Result<(), ApiError> {
-        let _telegram = self.telegram_config_lock.lock().await;
         let mut settings = self.settings.lock().await;
-        if settings.saved.sync.is_some() {
-            self.telegram
-                .configure(None)
-                .await
-                .map_err(ApiError::bad_request)?;
-        }
         validate_credentials(&snapshot.credentials).map_err(ApiError::bad_request)?;
         let old = read_local(&settings)?;
         if old.revision == snapshot.revision
@@ -487,7 +480,6 @@ impl AppState {
                     None,
                 )
                 .await?;
-                let _telegram = self.telegram_config_lock.lock().await;
                 let mut settings = self.settings.lock().await;
                 let mut next = settings.saved.clone();
                 next.secrets = encrypted_vault(&settings, &snapshot)?;
@@ -507,10 +499,6 @@ impl AppState {
                     revision: snapshot.revision,
                 });
                 settings.save(next).await?;
-                self.telegram
-                    .configure(None)
-                    .await
-                    .map_err(ApiError::bad_request)?;
                 runtime.pending = None;
                 runtime.last_error = None;
                 runtime.last_sync = Some(Utc::now().timestamp());
@@ -531,12 +519,11 @@ impl AppState {
                     )
                     .await;
                 }
-                let _telegram = self.telegram_config_lock.lock().await;
                 let mut settings = self.settings.lock().await;
                 let mut next = settings.saved.clone();
                 next.sync = None;
-                // The cloud remains the bot's polling owner. Offline use must
-                // be explicitly enabled after its cloud counterpart is stopped.
+                // Keep the encrypted cache, but Telegram requires a cloud
+                // connection and can never be enabled for offline polling.
                 if let Some(mut config) = crate::telegram::read_config(&settings)? {
                     config.enabled = false;
                     next.telegram = crate::telegram::encrypt_config(&settings, Some(&config))?;
