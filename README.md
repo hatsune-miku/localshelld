@@ -235,6 +235,12 @@ Windows 当前用户执行：`run({"handle":"…","command":"whoami","privilege_
 
 后台的“凭据”页面管理 key/value；Key 必须大写且直接作为环境变量名，例如 `JENKINS_CI_TOKEN`。值加密保存，列表及工具结果不返回已存的值。已配对时两个后台共用用户 daemon 的凭据库；未配对时使用各自的库。
 
+输入值直接显示文本。管理页支持导出和导入版本化 JSON 凭据文件；文件包含明文值，由用户自行保密，导入会替换全部凭据。执行 token 和 MCP 不能调用导出接口。
+
+“存储方式”默认使用本机离线库，也可连接自托管后端，通过通行密钥授权设备并同步凭据。连接后以云端为准：修改整库提交，云端确认后覆盖本机，版本冲突拒绝覆盖；在线设备通过实时长轮询更新。断网时不接受凭据操作或为新会话读取旧缓存，用户可以明确切换回离线模式。连接前应先导出本机数据，新服务的空云端库也会覆盖本机。
+
+后端、开放协议、凭据文件格式及部署方式见 [docs/SYNC.md](docs/SYNC.md)。后端独立为 `localshelld-sync-server`，不提供 shell 执行接口。
+
 Agent 可匿名调用 `secrets_list({})`，再把需要的 key 交给任一 enter：
 
 ```json
@@ -247,7 +253,7 @@ Agent 可匿名调用 `secrets_list({})`，再把需要的 key 交给任一 ente
 
 ### 路径
 
-所有写操作使用 `POST application/json`，避免把 token 或 handle 写入访问日志。完整示例见 [docs/API.md](docs/API.md)。
+本机写操作使用 `POST application/json`，避免把 token 或 handle 写入访问日志。完整示例见 [docs/API.md](docs/API.md)。
 
 | 路径 | 请求核心字段 | 用途 |
 |---|---|---|

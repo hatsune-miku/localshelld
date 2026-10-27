@@ -37,6 +37,13 @@ pub enum Request {
         secret_keys: Vec<String>,
     },
     SecretsList,
+    SecretsExport,
+    SecretsImport {
+        file: localshelld_sync_protocol::CredentialFile,
+    },
+    Sync {
+        action: crate::sync::Action,
+    },
     SecretPut {
         key: String,
         value: String,
@@ -299,6 +306,15 @@ async fn dispatch(state: &AppState, request: Request) -> Result<Value, ApiError>
             .await
         }
         (DaemonMode::User, Request::SecretsList) => Ok(json!(Box::pin(state.secret_keys()).await?)),
+        (DaemonMode::User, Request::SecretsExport) => {
+            serde_json::to_value(Box::pin(state.export_secrets()).await?)
+                .map_err(|_| ApiError::internal("credential file serialization failed"))
+        }
+        (DaemonMode::User, Request::SecretsImport { file }) => {
+            Box::pin(state.import_secrets(file)).await?;
+            Ok(Value::Null)
+        }
+        (DaemonMode::User, Request::Sync { action }) => Box::pin(state.sync_action(action)).await,
         (DaemonMode::User, Request::SecretPut { key, value }) => {
             let value = zeroize::Zeroizing::new(value);
             Box::pin(state.put_secret(&key, &value)).await?;

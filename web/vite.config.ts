@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
         consent: resolve(import.meta.dirname, 'consent.html'),
+        sync: resolve(import.meta.dirname, 'sync.html'),
       },
     },
   },

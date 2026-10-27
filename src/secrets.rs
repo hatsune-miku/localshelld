@@ -6,12 +6,12 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 use crate::{
-    bridge, config,
+    bridge,
     server::{ApiError, AppState, DaemonMode},
 };
 
-pub const MAX_KEYS: usize = 64;
-pub const MAX_VALUE_BYTES: usize = 16_384;
+pub const MAX_KEYS: usize = localshelld_sync_protocol::MAX_KEYS;
+pub const MAX_VALUE_BYTES: usize = localshelld_sync_protocol::MAX_VALUE_BYTES;
 // JSON can escape each byte sixfold, followed by the bridge's base64 envelope.
 pub const ENVIRONMENT_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 
@@ -37,28 +37,7 @@ impl Environment {
 }
 
 pub fn validate_key(key: &str) -> Result<(), ApiError> {
-    if key.is_empty()
-        || key.len() > 128
-        || !key
-            .bytes()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
-        || key.as_bytes()[0].is_ascii_digit()
-    {
-        return Err(ApiError::bad_request(
-            "key must match [A-Z_][A-Z0-9_]{0,127}",
-        ));
-    }
-    if key.starts_with("LOCALSHELLD_")
-        || matches!(
-            key,
-            "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "CDPATH"
-        )
-    {
-        return Err(ApiError::bad_request(
-            "key is reserved by the shell runtime",
-        ));
-    }
-    Ok(())
+    localshelld_sync_protocol::validate_key(key).map_err(ApiError::bad_request)
 }
 
 pub fn normalize_keys(keys: &[String]) -> Result<Vec<String>, ApiError> {
@@ -79,7 +58,7 @@ pub fn normalize_keys(keys: &[String]) -> Result<Vec<String>, ApiError> {
 impl AppState {
     // Paired installations use the desktop user's vault for every execution
     // identity. A standalone daemon owns its own vault.
-    async fn vault_peer(&self) -> Option<crate::settings::Pairing> {
+    pub(crate) async fn vault_peer(&self) -> Option<crate::settings::Pairing> {
         if self.mode == DaemonMode::Privileged {
             self.settings.lock().await.saved.pairing.clone()
         } else {
@@ -93,17 +72,15 @@ impl AppState {
                 &pairing,
                 DaemonMode::User,
                 bridge::Request::SecretsList,
-                Some(Duration::from_secs(5)),
+                Some(Duration::from_secs(60)),
                 65_536,
             )
             .await;
         }
         Ok(self
-            .settings
-            .lock()
-            .await
-            .saved
-            .secrets
+            .read_vault()
+            .await?
+            .credentials
             .keys()
             .cloned()
             .collect())
@@ -124,22 +101,13 @@ impl AppState {
                     key: key.into(),
                     value: value.into(),
                 },
-                Some(Duration::from_secs(5)),
+                Some(Duration::from_secs(75)),
                 65_536,
             )
             .await;
         }
-        let mut settings = self.settings.lock().await;
-        if settings.saved.secrets.len() >= MAX_KEYS && !settings.saved.secrets.contains_key(key) {
-            return Err(ApiError::bad_request(
-                "at most 64 credentials can be stored",
-            ));
-        }
-        let sealed = config::seal(value.as_bytes(), &settings.seal_key)
-            .map_err(|_| ApiError::internal("credential encryption failed"))?;
-        let mut next = settings.saved.clone();
-        next.secrets.insert(key.into(), sealed);
-        settings.save(next).await
+        self.change_vault(crate::sync::Change::Put(key, value))
+            .await
     }
 
     pub(crate) async fn remove_secret(&self, key: &str) -> Result<(), ApiError> {
@@ -149,15 +117,12 @@ impl AppState {
                 &pairing,
                 DaemonMode::User,
                 bridge::Request::SecretRemove { key: key.into() },
-                Some(Duration::from_secs(5)),
+                Some(Duration::from_secs(75)),
                 65_536,
             )
             .await;
         }
-        let mut settings = self.settings.lock().await;
-        let mut next = settings.saved.clone();
-        next.secrets.remove(key);
-        settings.save(next).await
+        self.change_vault(crate::sync::Change::Remove(key)).await
     }
 
     pub(crate) async fn resolve_secrets(&self, keys: &[String]) -> Result<Environment, ApiError> {
@@ -170,24 +135,19 @@ impl AppState {
                 &pairing,
                 DaemonMode::User,
                 bridge::Request::SecretsResolve { keys },
-                Some(Duration::from_secs(5)),
+                Some(Duration::from_secs(60)),
                 ENVIRONMENT_RESPONSE_LIMIT,
             )
             .await;
         }
-        let settings = self.settings.lock().await;
+        let snapshot = self.read_vault().await?;
         let mut result = Environment::default();
         for key in keys {
-            let sealed = settings
-                .saved
-                .secrets
+            let value = snapshot
+                .credentials
                 .get(&key)
                 .ok_or_else(|| ApiError::bad_request(format!("unknown secret key: {key}")))?;
-            let value = config::unseal(sealed, &settings.seal_key)
-                .map_err(|_| ApiError::internal("credential decryption failed"))?;
-            let value = std::str::from_utf8(&value)
-                .map_err(|_| ApiError::internal("invalid credential encoding"))?;
-            result.0.insert(key, value.into());
+            result.0.insert(key, value.clone());
         }
         Ok(result)
     }

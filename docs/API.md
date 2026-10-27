@@ -88,7 +88,7 @@ stdout、stderr 分别捕获，各最多保存 `max_output_bytes` 字节；非 U
 - 后台更换或删除凭据不改变已有快照。销毁后重新 enter 才读取新值，且需再次提供所需 key；未知 key 使新建失败，不创建部分会话。
 - 配对后统一使用用户 daemon 的凭据库，两端管理页通过已有加密桥访问同一库。未配对时使用本 daemon 的库；配对不会复制或迁移原独立库。系统端无法连接已配对的凭据库时不会回退到另一份值。
 
-这些值不由列表、enter、会话元数据或管理响应回传。获得环境变量的 shell 及其子程序仍能主动打印、记录或发送它们，`run` 不提供防泄露隔离或可靠的任意输出脱敏。
+这些值不由列表、enter 或会话元数据回传；管理页的显式文件导出会返回明文值。获得环境变量的 shell 及其子程序仍能主动打印、记录或发送它们，`run` 不提供防泄露隔离或可靠的任意输出脱敏。
 
 下列管理接口要求现有 10 分钟管理 session 的 Bearer header，执行 token 不能代替管理登录：
 
@@ -97,6 +97,20 @@ stdout、stderr 分别捕获，各最多保存 `max_output_bytes` 字节；非 U
 | `GET /v1/admin/secrets` | `{"keys":["JENKINS_CI_TOKEN"]}` |
 | `POST /v1/admin/secrets/put` | `{"key":"JENKINS_CI_TOKEN","value":"..."}`；创建或替换，返回 `{"saved":true}` |
 | `POST /v1/admin/secrets/remove` | `{"key":"JENKINS_CI_TOKEN"}`；返回 `{"removed":true}` |
+| `POST /v1/admin/secrets/export` | `{}`；返回 `format`、`version`、`credentials`，包含明文值，附件文件名为 `localshelld-credentials.json` |
+| `POST /v1/admin/secrets/import` | 完整凭据文件对象；校验全部内容后整库替换，返回 `{"imported":true}` |
+
+文件格式及云端协议见 [SYNC.md](SYNC.md)。管理接口还包括 `POST /v1/admin/sync`：
+
+| `action` | 其他字段及返回 |
+|---|---|
+| `status` | 返回 `url`、`revision`、`last_sync`、`error`；离线时 url 为 null，不返回 token |
+| `start` | 传 `url`、`name`，返回 `verification_uri`、`user_code`、`expires_in`、`interval`；私有 device code 留在 daemon |
+| `poll` | 等待授权时返回 `{"pending":true}`；成功拉取并保存云端数据后返回 `{"connected":true}` |
+| `refresh` | 立即从云端读取，返回 `revision` |
+| `disconnect` | 保留最后确认的本机数据并切换离线，返回 `{"offline":true}`；尝试撤销远端会话 |
+
+这些操作同样要求管理登录，不接受执行 token。已配对时转发至用户 daemon。仍配置云端但无法访问时，凭据列表、读写、导入导出和新会话的凭据解析失败，不使用离线缓存回退；已授权 shell 的环境变量快照保持不变。
 
 credential 格式为：
 

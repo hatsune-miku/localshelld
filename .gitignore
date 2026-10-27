@@ -10,6 +10,10 @@ rust-project.json
 
 # localshelld local runtime state and secrets
 /.localshelld/
+/sync-data/
+**/bootstrap-code
+**/master.key
+**/state.aes
 /config.toml
 /localshelld.local.toml
 # Keep legacy runtime secrets ignored during migration

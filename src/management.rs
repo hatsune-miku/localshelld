@@ -125,6 +125,14 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/admin/secrets", get(secrets))
         .route("/v1/admin/secrets/put", post(secret_put))
         .route("/v1/admin/secrets/remove", post(secret_remove))
+        .route("/v1/admin/secrets/export", post(secret_export))
+        .route(
+            "/v1/admin/secrets/import",
+            post(secret_import).layer(axum::extract::DefaultBodyLimit::max(
+                localshelld_sync_protocol::MAX_BODY_BYTES,
+            )),
+        )
+        .route("/v1/admin/sync", post(sync))
         .route("/v1/admin/password", post(password))
         .route("/v1/admin/totp/start", post(totp_start))
         .route("/v1/admin/totp/finish", post(totp_finish))
@@ -152,6 +160,39 @@ async fn secrets(
 ) -> Result<Json<Value>, ApiError> {
     owner(&state, &headers).await?;
     Ok(Json(json!({"keys":state.secret_keys().await?})))
+}
+
+async fn secret_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    owner(&state, &headers).await?;
+    Ok((
+        [(
+            "content-disposition",
+            "attachment; filename=localshelld-credentials.json",
+        )],
+        Json(state.export_secrets().await?),
+    ))
+}
+
+async fn secret_import(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(file): Json<localshelld_sync_protocol::CredentialFile>,
+) -> Result<Json<Value>, ApiError> {
+    owner(&state, &headers).await?;
+    state.import_secrets(file).await?;
+    Ok(Json(json!({"imported":true})))
+}
+
+async fn sync(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(action): Json<crate::sync::Action>,
+) -> Result<Json<Value>, ApiError> {
+    owner(&state, &headers).await?;
+    Ok(Json(state.sync_action(action).await?))
 }
 
 #[derive(Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]

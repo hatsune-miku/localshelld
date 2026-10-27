@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+
 import { type Page, expect, test } from '@playwright/test'
 
 async function login(page: Page) {
@@ -135,6 +137,7 @@ test('credentials require uppercase keys and support write-only creation, replac
   await page.getByRole('button', { name: '凭据', exact: true }).click()
   const keyInput = page.getByLabel('Key', { exact: true })
   const valueInput = page.getByLabel('值', { exact: true })
+  await expect(valueInput).toHaveAttribute('type', 'text')
   await keyInput.fill('lower_case')
   await valueInput.fill('fixture-browser-value')
   await page.getByRole('button', { name: '添加凭据', exact: true }).click()
@@ -177,4 +180,48 @@ test('desktop overview renders cleanly', async ({ page }) => {
   await page.screenshot({ path: 'test-results/desktop-tokens.png', fullPage: true })
   await page.getByRole('button', { name: '桌面授权', exact: true }).click()
   await page.screenshot({ path: 'test-results/desktop-settings.png', fullPage: true })
+})
+
+test('credential file export is plaintext and import replaces the vault after confirmation', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: '凭据', exact: true }).click()
+  await expect(page.getByText('本机离线', { exact: true })).toBeVisible()
+  const file = {
+    format: 'localshelld-credentials',
+    version: 1,
+    credentials: { FILE_TEST: 'fixture-export-中文\nvalue' },
+  }
+  page.once('dialog', (dialog) => {
+    expect(dialog.message()).toContain('替换全部')
+    return dialog.accept()
+  })
+  await page.getByLabel('选择凭据文件').setInputFiles({
+    name: 'credentials.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(file)),
+  })
+  await expect(page.getByText('凭据已导入。', { exact: true })).toBeVisible()
+  await expect(page.getByRole('listitem').filter({ hasText: 'FILE_TEST' })).toBeVisible()
+  page.once('dialog', (dialog) => {
+    expect(dialog.message()).toContain('明文凭据')
+    return dialog.accept()
+  })
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出文件', exact: true }).click()
+  const downloaded = await download
+  expect(JSON.parse(await readFile((await downloaded.path())!, 'utf8'))).toEqual(file)
+  const invalid = { ...file, credentials: { lower: 'invalid' } }
+  page.once('dialog', (dialog) => dialog.accept())
+  await page
+    .getByLabel('选择凭据文件')
+    .setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(invalid)) })
+  await expect(page.getByRole('alert')).toContainText('key must match')
+  await expect(page.getByRole('listitem').filter({ hasText: 'FILE_TEST' })).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page
+    .getByRole('listitem')
+    .filter({ hasText: 'FILE_TEST' })
+    .getByRole('button', { name: '删除', exact: true })
+    .click()
+  await expect(page.getByText('凭据已删除。', { exact: true })).toBeVisible()
 })

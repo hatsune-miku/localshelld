@@ -10,7 +10,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "cargo build --manifest-path ../Cargo.toml -p localshelld-sync-server && playwright test"
   },
   "dependencies": {
     "@a1knla/cakeui": "0.4.0",

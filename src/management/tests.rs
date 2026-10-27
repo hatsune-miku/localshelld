@@ -67,6 +67,92 @@ async fn login(app: &Router, password: &str) -> String {
 }
 
 #[tokio::test]
+async fn credential_file_import_export_require_human_login_and_replace_atomically() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = stored_state(directory.path());
+    let app = router(state.clone());
+    let file = json!({"format":"localshelld-credentials","version":1,"credentials":{"PORTABLE_TOKEN":"fixture-only-中文\nvalue"}});
+    let execution = state.auth.lock().await.issue_token(None).unwrap().0;
+    for session in [None, Some(execution.as_str())] {
+        assert_eq!(
+            call(&app, "/v1/admin/secrets/export", Some(json!({})), session)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(
+                &app,
+                "/v1/admin/secrets/import",
+                Some(file.clone()),
+                session
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(
+                &app,
+                "/v1/admin/sync",
+                Some(json!({"action":"status"})),
+                session
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let session = login(&app, "test").await;
+    state
+        .put_secret("REMOVED_TOKEN", "old fixture")
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "/v1/admin/secrets/import",
+            Some(file.clone()),
+            Some(&session)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(state.secret_keys().await.unwrap(), ["PORTABLE_TOKEN"]);
+    let (status, exported) = call(
+        &app,
+        "/v1/admin/secrets/export",
+        Some(json!({})),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(exported, file);
+    for invalid in [
+        json!({"format":"localshelld-credentials","version":2,"credentials":{}}),
+        json!({"format":"localshelld-credentials","version":1,"credentials":{"INVALID":""}}),
+        json!({"format":"localshelld-credentials","version":1,"credentials":{"lower":"fixture"}}),
+    ] {
+        assert_eq!(
+            call(
+                &app,
+                "/v1/admin/secrets/import",
+                Some(invalid),
+                Some(&session)
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(state.secret_keys().await.unwrap(), ["PORTABLE_TOKEN"]);
+    }
+    let on_disk =
+        std::fs::read_to_string(directory.path().join("config.authorization.json")).unwrap();
+    assert!(!on_disk.contains("fixture-only"));
+}
+
+#[tokio::test]
 async fn credential_management_requires_human_login_and_persists_only_ciphertext() {
     let directory = tempfile::tempdir().unwrap();
     let state = stored_state(directory.path());

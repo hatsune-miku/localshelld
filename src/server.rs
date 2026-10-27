@@ -35,6 +35,7 @@ pub struct AppState {
     pub(crate) consent: Option<ConsentBroker>,
     pub(crate) management: Arc<Mutex<crate::management::Management>>,
     pub(crate) mcp_sessions: Arc<mcp::TransportSessions>,
+    pub(crate) sync: Arc<Mutex<crate::sync::Runtime>>,
     interactive_permits: Arc<tokio::sync::Semaphore>,
 }
 
@@ -201,6 +202,7 @@ impl AppState {
             consent: None,
             management: Arc::new(Mutex::new(crate::management::Management::default())),
             mcp_sessions: Arc::new(mcp::TransportSessions::default()),
+            sync: Arc::new(Mutex::new(crate::sync::Runtime::default())),
             interactive_permits: Arc::new(tokio::sync::Semaphore::new(crate::consent::MAX_PENDING)),
             mode: DaemonMode::Privileged,
             peer: None,
@@ -991,6 +993,7 @@ impl AppState {
     }
 
     pub async fn shutdown(&self) {
+        self.stop_sync_worker().await;
         let sessions = {
             let mut sessions = self.sessions.lock().await;
             sessions.shutting_down = true;
@@ -1148,7 +1151,7 @@ pub fn router(state: AppState) -> Router {
         // AEAD/base64 expands a valid public JSON request beyond 2 MiB.
         .route(
             "/v1/bridge",
-            post(bridge::handle).layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024)),
+            post(bridge::handle).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route("/v1/sessions/enter", post(enter))
         .route("/v1/secrets/keys", get(secret_keys))

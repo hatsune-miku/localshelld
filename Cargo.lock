@@ -1790,6 +1790,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64 0.22.1",
+ "js-sys",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1841,6 +1854,7 @@ dependencies = [
  "include_dir",
  "localshelld-native-dialog",
  "localshelld-native-process",
+ "localshelld-sync-protocol",
  "mime_guess",
  "openssl",
  "plist",
@@ -1883,6 +1897,43 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "localshelld-sync-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "zeroize",
+]
+
+[[package]]
+name = "localshelld-sync-server"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "fs2",
+ "http-body-util",
+ "include_dir",
+ "jsonwebtoken",
+ "localshelld-sync-protocol",
+ "mime_guess",
+ "openssl",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "uuid",
+ "webauthn-rs",
  "zeroize",
 ]
 

@@ -1,0 +1,35 @@
+[package]
+name = "localshelld-sync-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Self-hosted passkey-authenticated credential synchronization for localshelld"
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+chrono = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+fs2 = "0.4"
+include_dir = "0.7"
+jsonwebtoken = { version = "9.3", default-features = false }
+localshelld-sync-protocol = { path = "../sync-protocol" }
+mime_guess = "2"
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+webauthn-rs = "0.5.5"
+zeroize = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

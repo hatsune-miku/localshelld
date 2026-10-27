@@ -406,6 +406,7 @@ where
     if let Some(consent) = consent {
         state = state.with_consent(consent);
     }
+    state.start_sync_worker().await;
     axum::serve(listener, router(state.clone()))
         .with_graceful_shutdown(async move {
             shutdown.await;

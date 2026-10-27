@@ -18,6 +18,7 @@ pub struct SavedSettings {
     pub remembered: BTreeMap<String, bool>,
     pub remembered_secrets: BTreeMap<String, Vec<String>>,
     pub secrets: BTreeMap<String, crate::config::SealedSecret>,
+    pub sync: Option<crate::sync::SavedSync>,
     pub pairing: Option<Pairing>,
     pub passkeys: Vec<StoredPasskey>,
     pub user_id: Option<uuid::Uuid>,
@@ -54,7 +55,7 @@ impl Settings {
     pub fn load(path: PathBuf, config: Config) -> anyhow::Result<Self> {
         let saved: SavedSettings = storage::load_json(&path.with_extension("authorization.json"))?;
         let key_path = crate::config::seal_key_path(&path);
-        if !saved.secrets.is_empty() && !key_path.exists() {
+        if (!saved.secrets.is_empty() || saved.sync.is_some()) && !key_path.exists() {
             anyhow::bail!("credential encryption key is missing");
         }
         let seal_key = crate::config::load_or_create_seal_key(&key_path)?;
