@@ -133,6 +133,7 @@ pub fn routes() -> Router<AppState> {
             )),
         )
         .route("/v1/admin/sync", post(sync))
+        .route("/v1/admin/telegram", post(telegram))
         .route("/v1/admin/password", post(password))
         .route("/v1/admin/totp/start", post(totp_start))
         .route("/v1/admin/totp/finish", post(totp_finish))
@@ -193,6 +194,15 @@ async fn sync(
 ) -> Result<Json<Value>, ApiError> {
     owner(&state, &headers).await?;
     Ok(Json(state.sync_action(action).await?))
+}
+
+async fn telegram(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(action): Json<crate::telegram::Action>,
+) -> Result<Json<Value>, ApiError> {
+    let owner = owner(&state, &headers).await?;
+    Ok(Json(state.telegram_action(&owner, action).await?))
 }
 
 #[derive(Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]

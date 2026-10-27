@@ -1,6 +1,6 @@
 # 凭据同步协议 v1
 
-localshelld 默认使用本机离线凭据库，也可以连接自托管同步服务。此协议只同步凭据，不同步执行令牌、Master Password、TOTP、桌面授权记忆或本机通行密钥。
+localshelld 默认使用本机离线凭据库，也可以连接自托管同步服务。此协议同步凭据和 Telegram bot 配置，不同步执行令牌、Master Password、TOTP、桌面授权记忆或本机通行密钥。
 
 参考实现位于 `crates/sync-server`，共享数据类型与校验位于 `crates/sync-protocol`。实现采用单实例、单所有者模型；不同客户端可以按本文独立实现。
 

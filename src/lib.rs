@@ -19,6 +19,7 @@ pub(crate) mod settings;
 pub mod shell;
 pub(crate) mod storage;
 pub(crate) mod sync;
+pub mod telegram;
 
 pub const VERSION: &str = env!("LOCALSHELLD_VERSION");
 pub const COMMIT: &str = env!("LOCALSHELLD_COMMIT");

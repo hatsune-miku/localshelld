@@ -36,6 +36,8 @@ pub struct AppState {
     pub(crate) management: Arc<Mutex<crate::management::Management>>,
     pub(crate) mcp_sessions: Arc<mcp::TransportSessions>,
     pub(crate) sync: Arc<Mutex<crate::sync::Runtime>>,
+    pub(crate) telegram: localshelld_telegram::Service,
+    pub(crate) telegram_config_lock: Arc<Mutex<()>>,
     interactive_permits: Arc<tokio::sync::Semaphore>,
 }
 
@@ -210,6 +212,8 @@ impl AppState {
             management: Arc::new(Mutex::new(crate::management::Management::default())),
             mcp_sessions: Arc::new(mcp::TransportSessions::default()),
             sync: Arc::new(Mutex::new(crate::sync::Runtime::default())),
+            telegram: localshelld_telegram::Service::default(),
+            telegram_config_lock: Arc::new(Mutex::new(())),
             interactive_permits: Arc::new(tokio::sync::Semaphore::new(crate::consent::MAX_PENDING)),
             mode: DaemonMode::Privileged,
             peer: None,
@@ -351,7 +355,7 @@ impl AppState {
                     },
                 }
             } else {
-                self.consent.as_ref().ok_or_else(|| ApiError::unavailable("interactive authorization requires the user daemon on a graphical desktop"))?.request(prompt).await?
+                self.request_consent(prompt).await?
             };
             btw = decision.btw;
             if decision.choice == Choice::Ignore {
@@ -1000,6 +1004,7 @@ impl AppState {
     }
 
     pub async fn shutdown(&self) {
+        self.telegram.stop().await;
         self.stop_sync_worker().await;
         let sessions = {
             let mut sessions = self.sessions.lock().await;

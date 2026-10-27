@@ -2,6 +2,8 @@ import { type FormEvent, useEffect, useState } from 'react'
 
 import { Button, Field, TextBox } from '@a1knla/cakeui'
 
+import { TelegramSettings } from './components/TelegramSettings'
+
 import { Feedback } from '../../../Feedback'
 import { type Settings, api } from '../../../api'
 import { useAction } from '../../../useAction'
@@ -122,6 +124,7 @@ export function DesktopSettings({ session }: { session: string }) {
           </Button>
         )}
       </section>
+      <TelegramSettings session={session} />
       <section className="desktop-section">
         <h3 className="subsection-title">记住的选择</h3>
         <p className="description">按代理提交的名称匹配。名称是自报信息，不是身份认证；重置不会撤销已经建立的会话。</p>

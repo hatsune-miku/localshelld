@@ -19,6 +19,38 @@ fn stored_state(directory: &std::path::Path) -> AppState {
     AppState::new(config, auth).with_storage(path).unwrap()
 }
 
+#[tokio::test]
+async fn telegram_settings_accept_human_management_sessions_not_execution_tokens() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = stored_state(directory.path());
+    let token = state.auth.lock().await.issue_token(None).unwrap().0;
+    let app = router(state);
+    for session in [None, Some(token.as_str())] {
+        for body in [
+            json!({"action":"status"}),
+            json!({"action":"remove"}),
+            json!({"action":"bind_start"}),
+        ] {
+            assert_eq!(
+                call(&app, "/v1/admin/telegram", Some(body), session)
+                    .await
+                    .0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+    let session = login(&app, "test").await;
+    let (status, body) = call(
+        &app,
+        "/v1/admin/telegram",
+        Some(json!({"action":"status"})),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["configured"], false);
+}
+
 async fn call(
     app: &Router,
     path: &str,

@@ -94,7 +94,9 @@ async fn request<T: DeserializeOwned>(
     body: Option<&Value>,
     timeout: Option<Duration>,
 ) -> Result<T, ApiError> {
-    let mut request = client()?.request(method, format!("{url}/sync/v1/{path}"));
+    let mut request = client()?
+        .request(method, format!("{url}/sync/v1/{path}"))
+        .header("x-localshelld-features", "telegram-v1");
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
@@ -150,6 +152,7 @@ fn read_local(settings: &Settings) -> Result<Snapshot, ApiError> {
     let mut snapshot = Snapshot {
         revision: settings.saved.sync.as_ref().map_or(0, |sync| sync.revision),
         credentials: BTreeMap::new(),
+        telegram: crate::telegram::read_config(settings)?,
     };
     for (key, sealed) in &settings.saved.secrets {
         let value = config::unseal(sealed, &settings.seal_key)
@@ -180,6 +183,28 @@ fn encrypted_vault(
 }
 
 impl AppState {
+    pub(crate) async fn telegram_cloud_request(
+        &self,
+        path: &str,
+        body: Value,
+        timeout: Duration,
+    ) -> Result<Value, ApiError> {
+        let (saved, tokens) = {
+            let _serial = self.sync.lock().await;
+            self.tokens_locked()
+                .await?
+                .ok_or_else(|| ApiError::unavailable("cloud connection was removed"))?
+        };
+        request(
+            Method::POST,
+            &saved.url,
+            path,
+            Some(&tokens.access_token),
+            Some(&body),
+            Some(timeout),
+        )
+        .await
+    }
     // Caller holds self.sync across all helpers suffixed _locked.
     async fn tokens_locked(&self) -> Result<Option<(SavedSync, Tokens)>, ApiError> {
         let settings = self.settings.lock().await;
@@ -223,14 +248,25 @@ impl AppState {
     }
 
     async fn save_snapshot_locked(&self, snapshot: &Snapshot) -> Result<(), ApiError> {
+        let _telegram = self.telegram_config_lock.lock().await;
         let mut settings = self.settings.lock().await;
+        if settings.saved.sync.is_some() {
+            self.telegram
+                .configure(None)
+                .await
+                .map_err(ApiError::bad_request)?;
+        }
         validate_credentials(&snapshot.credentials).map_err(ApiError::bad_request)?;
         let old = read_local(&settings)?;
-        if old.revision == snapshot.revision && old.credentials == snapshot.credentials {
+        if old.revision == snapshot.revision
+            && old.credentials == snapshot.credentials
+            && old.telegram == snapshot.telegram
+        {
             return Ok(());
         }
         let mut next = settings.saved.clone();
         next.secrets = encrypted_vault(&settings, snapshot)?;
+        next.telegram = crate::telegram::encrypt_config(&settings, snapshot.telegram.as_ref())?;
         if let Some(sync) = &mut next.sync {
             sync.revision = snapshot.revision;
         }
@@ -446,9 +482,12 @@ impl AppState {
                     None,
                 )
                 .await?;
+                let _telegram = self.telegram_config_lock.lock().await;
                 let mut settings = self.settings.lock().await;
                 let mut next = settings.saved.clone();
                 next.secrets = encrypted_vault(&settings, &snapshot)?;
+                next.telegram =
+                    crate::telegram::encrypt_config(&settings, snapshot.telegram.as_ref())?;
                 let sealed = config::seal(
                     &Zeroizing::new(
                         serde_json::to_vec(tokens)
@@ -463,6 +502,10 @@ impl AppState {
                     revision: snapshot.revision,
                 });
                 settings.save(next).await?;
+                self.telegram
+                    .configure(None)
+                    .await
+                    .map_err(ApiError::bad_request)?;
                 runtime.pending = None;
                 runtime.last_error = None;
                 runtime.last_sync = Some(Utc::now().timestamp());
@@ -483,9 +526,16 @@ impl AppState {
                     )
                     .await;
                 }
+                let _telegram = self.telegram_config_lock.lock().await;
                 let mut settings = self.settings.lock().await;
                 let mut next = settings.saved.clone();
                 next.sync = None;
+                // The cloud remains the bot's polling owner. Offline use must
+                // be explicitly enabled after its cloud counterpart is stopped.
+                if let Some(mut config) = crate::telegram::read_config(&settings)? {
+                    config.enabled = false;
+                    next.telegram = crate::telegram::encrypt_config(&settings, Some(&config))?;
+                }
                 settings.save(next).await?;
                 runtime.pending = None;
                 runtime.last_error = None;

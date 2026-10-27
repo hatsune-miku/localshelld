@@ -77,6 +77,7 @@ async fn server() -> (Mock, String, tokio::task::JoinHandle<()>) {
     let (revisions, _) = watch::channel(1);
     let mock = Mock {
         snapshot: Arc::new(Mutex::new(Snapshot {
+            telegram: None,
             revision: 1,
             credentials: BTreeMap::from([("CLOUD_TOKEN".into(), "cloud value".into())]),
         })),
@@ -159,6 +160,53 @@ async fn cloud_is_authority_and_unavailable_service_never_falls_back_to_local_wr
             .unwrap()
             .contains(&"OFFLINE_TOKEN".to_owned())
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn telegram_snapshot_syncs_encrypted_and_credentials_do_not_erase_it() {
+    let (mock, url, server) = server().await;
+    let config = localshelld_telegram::Config {
+        bot_token: "123456:abcdefghijklmnopqrstuvwxyz".into(),
+        bot_username: "fixture_bot".into(),
+        enabled: true,
+        binding: Some(localshelld_telegram::Binding {
+            user_id: 42,
+            chat_id: 42,
+        }),
+    };
+    mock.snapshot.lock().await.telegram = Some(config.clone());
+    let a = device(&url, false).await;
+    let b = device(&url, false).await;
+    a.read_vault().await.unwrap();
+    a.put_secret("NEXT", "credential value").await.unwrap();
+    b.read_vault().await.unwrap();
+    let settings = b.settings.lock().await;
+    assert!(crate::telegram::read_config(&settings).unwrap() == Some(config.clone()));
+    assert!(
+        !serde_json::to_string(&settings.saved)
+            .unwrap()
+            .contains(&config.bot_token)
+    );
+    drop(settings);
+    assert!(mock.snapshot.lock().await.telegram == Some(config.clone()));
+    assert!(
+        !b.export_secrets()
+            .await
+            .unwrap()
+            .credentials
+            .values()
+            .any(|v| v == &config.bot_token)
+    );
+    b.sync_action(Action::Disconnect).await.unwrap();
+    assert!(
+        !crate::telegram::read_config(&*b.settings.lock().await)
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    a.shutdown().await;
+    b.shutdown().await;
     server.abort();
 }
 

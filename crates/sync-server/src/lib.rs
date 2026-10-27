@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 mod storage;
+mod telegram;
 
 use axum::{
     Json, Router,
@@ -108,6 +109,8 @@ pub struct App {
     webauthn: Arc<Webauthn>,
     origin: String,
     revision: watch::Sender<u64>,
+    telegram: localshelld_telegram::Service,
+    telegram_config_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -157,6 +160,8 @@ impl App {
                 starts: 0,
             })),
             revision,
+            telegram: localshelld_telegram::Service::default(),
+            telegram_config_lock: Arc::new(Mutex::new(())),
         })
     }
     fn authenticate(&self, store: &Store, headers: &HeaderMap) -> Result<Claims> {
@@ -292,6 +297,10 @@ pub fn router(app: App) -> Router {
         .route("/sync/v1/device/approve", post(device_approve))
         .route("/sync/v1/device/poll", post(device_poll))
         .route("/sync/v1/vault", get(vault_get).put(vault_put))
+        .route("/sync/v1/telegram", post(telegram::control))
+        .route("/sync/v1/telegram/request", post(telegram::create))
+        .route("/sync/v1/telegram/poll", post(telegram::poll))
+        .route("/sync/v1/telegram/finish", post(telegram::finish))
         .route("/sync/v1/events", get(events))
         .fallback(assets)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -328,7 +337,9 @@ async fn security(State(app): State<App>, request: Request, next: Next) -> Respo
 
 async fn info(State(app): State<App>) -> Json<Value> {
     let store = app.store.lock().await;
-    Json(json!({"protocol":1,"initialized":!store.saved.passkeys.is_empty(),"origin":app.origin}))
+    Json(
+        json!({"protocol":1,"features":["telegram-v1"],"initialized":!store.saved.passkeys.is_empty(),"origin":app.origin}),
+    )
 }
 
 #[derive(Deserialize)]
@@ -685,16 +696,30 @@ async fn device_poll(State(app): State<App>, Json(body): Json<DeviceCode>) -> Re
     Ok(Json(tokens).into_response())
 }
 
-async fn vault_get(State(app): State<App>, headers: HeaderMap) -> Result<Json<Snapshot>> {
+fn wire_snapshot(snapshot: &Snapshot, headers: &HeaderMap) -> Value {
+    let mut value = json!(snapshot);
+    if headers
+        .get("x-localshelld-features")
+        .and_then(|v| v.to_str().ok())
+        != Some("telegram-v1")
+    {
+        value
+            .as_object_mut()
+            .expect("snapshot object")
+            .remove("telegram");
+    }
+    value
+}
+async fn vault_get(State(app): State<App>, headers: HeaderMap) -> Result<Json<Value>> {
     let store = app.store.lock().await;
     app.authenticate(&store, &headers)?;
-    Ok(Json(store.saved.vault.clone()))
+    Ok(Json(wire_snapshot(&store.saved.vault, &headers)))
 }
 async fn vault_put(
     State(app): State<App>,
     headers: HeaderMap,
     Json(body): Json<Replace>,
-) -> Result<Json<Snapshot>> {
+) -> Result<Json<Value>> {
     validate_credentials(&body.credentials).map_err(bad)?;
     let mut store = app.store.lock().await;
     app.authenticate(&store, &headers)?;
@@ -709,7 +734,7 @@ async fn vault_put(
     next.vault.credentials = body.credentials.clone();
     store.commit(next).map_err(|_| internal())?;
     app.revision.send_replace(store.saved.vault.revision);
-    Ok(Json(store.saved.vault.clone()))
+    Ok(Json(wire_snapshot(&store.saved.vault, &headers)))
 }
 
 #[derive(Deserialize)]

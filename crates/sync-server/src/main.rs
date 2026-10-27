@@ -16,6 +16,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let app = localshelld_sync_server::App::open(&args.data, &args.origin)?;
+    app.start_telegram().await?;
     if args.data.join("bootstrap-code").exists() {
         eprintln!(
             "Initialization code file: {}",

@@ -1855,6 +1855,7 @@ dependencies = [
  "localshelld-native-dialog",
  "localshelld-native-process",
  "localshelld-sync-protocol",
+ "localshelld-telegram",
  "mime_guess",
  "openssl",
  "plist",
@@ -1923,6 +1924,7 @@ dependencies = [
  "include_dir",
  "jsonwebtoken",
  "localshelld-sync-protocol",
+ "localshelld-telegram",
  "mime_guess",
  "openssl",
  "rand_core 0.6.4",
@@ -1934,6 +1936,21 @@ dependencies = [
  "tower",
  "uuid",
  "webauthn-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "localshelld-telegram"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "localshelld-sync-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
  "zeroize",
 ]
 

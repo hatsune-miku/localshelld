@@ -2,7 +2,6 @@
 //! Desktop implementations receive an in-process, one-shot reply capability.
 use std::{sync::Arc, time::Duration};
 
-use serde::{Deserialize, Serialize};
 use tokio::{sync::oneshot, time::Instant};
 
 use crate::server::ApiError;
@@ -10,32 +9,7 @@ use crate::server::ApiError;
 pub const CONSENT_TIMEOUT: Duration = Duration::from_millis(60_000);
 pub const MAX_PENDING: usize = 8;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Prompt {
-    pub id: String,
-    pub agent_name: String,
-    pub request_reason: String,
-    pub scope: String,
-    #[serde(default)]
-    pub secret_keys: Vec<String>,
-    pub expires_at_ms: i64,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Choice {
-    Accept,
-    Deny,
-    Ignore,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Decision {
-    pub choice: Choice,
-    pub remember: bool,
-    #[serde(default)]
-    pub btw: String,
-}
+pub use localshelld_telegram::{Choice, Decision, Prompt};
 
 pub enum DesktopEvent {
     Show(Prompt, oneshot::Sender<Decision>),

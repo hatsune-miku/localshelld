@@ -6,7 +6,7 @@ description = "User-controlled local and privileged PowerShell and Bash sessions
 license = "MIT"
 
 [workspace]
-members = ["crates/native-dialog", "crates/native-process", "crates/sync-protocol", "crates/sync-server"]
+members = ["crates/native-dialog", "crates/native-process", "crates/sync-protocol", "crates/sync-server", "crates/telegram"]
 
 [dependencies]
 aes-gcm = "0.10"
@@ -39,6 +39,7 @@ include_dir = "0.7"
 mime_guess = "2"
 zeroize = { version = "1", features = ["derive"] }
 localshelld-sync-protocol = { path = "crates/sync-protocol" }
+localshelld-telegram = { path = "crates/telegram" }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]

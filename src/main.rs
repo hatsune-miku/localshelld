@@ -49,6 +49,16 @@ enum CommandKind {
     /// Internal, one-shot installer. Never exposed by either daemon.
     #[command(hide = true)]
     MaintenanceApply { plan: PathBuf, digest: String },
+    /// Configure Telegram from one token line on stdin; stop this daemon first.
+    ConfigureTelegram {
+        #[arg(long)]
+        user: bool,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Reuse a previously generated binding link (32 hexadecimal characters).
+        #[arg(long)]
+        binding_code: Option<String>,
+    },
     /// Initialize the Master Password and optional Authenticator support.
     Init {
         /// Initialize an independent current-user daemon configuration.
@@ -176,6 +186,71 @@ fn main() -> Result<()> {
 
 async fn run_command(command: CommandKind) -> Result<()> {
     match command {
+        CommandKind::ConfigureTelegram {
+            user,
+            config,
+            binding_code,
+        } => {
+            if user {
+                require_user()?;
+            }
+            let path = mode_config_path(config, user)?;
+            let config = Config::load(&path)?;
+            // Reserve the same listening socket throughout provisioning. A live
+            // daemon or a second setup process must not rotate the same tokens.
+            let _exclusive = tokio::net::TcpListener::bind(config.bind)
+                .await
+                .context("stop the daemon before configuring Telegram from the CLI")?;
+            let auth = AuthManager::new(config.password_hash.clone(), None);
+            let state = if user {
+                AppState::user(config, auth)?
+            } else {
+                AppState::new(config, auth)
+            }
+            .with_storage(path)?;
+            let token = Zeroizing::new(read_input_line(&mut io::stdin().lock())?);
+            use localshelld::telegram::Action;
+            state
+                .telegram_action(
+                    "local-cli",
+                    Action::Configure {
+                        token: Some(token.to_string()),
+                        enabled: true,
+                    },
+                )
+                .await?;
+            let binding = state
+                .telegram_action("local-cli", Action::BindStart { code: binding_code })
+                .await?;
+            println!(
+                "Open {} and select Start.",
+                binding["url"].as_str().unwrap_or_default()
+            );
+            let code = binding["code"]
+                .as_str()
+                .context("missing binding code")?
+                .to_owned();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(900);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    bail!("Telegram binding expired; token remains saved");
+                }
+                let result = state
+                    .telegram_action("local-cli", Action::BindPoll { code: code.clone() })
+                    .await?;
+                if result["bound"] == true {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            state.telegram_action("local-cli", Action::Test).await?;
+            println!(
+                "{}",
+                state.telegram_action("local-cli", Action::Status).await?
+            );
+            state.shutdown().await;
+            Ok(())
+        }
         CommandKind::Maintenance { no_open } => maintenance::run(no_open).await,
         CommandKind::MaintenanceApply { plan, digest } => {
             tokio::task::spawn_blocking(move || maintenance::apply(&plan, &digest)).await?

@@ -51,6 +51,148 @@ async fn setup() -> (tempfile::TempDir, App, Router, Tokens, Tokens) {
 }
 
 #[tokio::test]
+async fn telegram_configuration_is_private_cas_persisted_and_legacy_compatible() {
+    let (directory, state, app, _, device) = setup().await;
+    let config = localshelld_telegram::Config {
+        bot_token: "123456:abcdefghijklmnopqrstuvwxyz".into(),
+        bot_username: "fixture_bot".into(),
+        enabled: false,
+        binding: None,
+    };
+    {
+        let mut store = state.store.lock().await;
+        let mut next = store.saved.clone();
+        next.vault.telegram = Some(config.clone());
+        store.commit(next).unwrap();
+    }
+    let command = json!({"expected_revision":0,"command":{"action":"status"}});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/sync/v1/telegram",
+            Some(command.clone()),
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/sync/v1/telegram",
+        Some(command),
+        Some(&device.access_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["configured"], true);
+    assert!(!body.to_string().contains(&config.bot_token));
+    let (_, old) = call(
+        &app,
+        "GET",
+        "/sync/v1/vault",
+        None,
+        Some(&device.access_token),
+    )
+    .await;
+    assert!(old.get("telegram").is_none());
+    let mut headers = HeaderMap::new();
+    headers.insert("x-localshelld-features", "telegram-v1".parse().unwrap());
+    assert_eq!(
+        wire_snapshot(&state.store.lock().await.saved.vault, &headers)["telegram"]["bot_token"],
+        config.bot_token
+    );
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/sync/v1/vault",
+        Some(json!({"expected_revision":0,"credentials":{"KEY":"new"}})),
+        Some(&device.access_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(state.store.lock().await.saved.vault.telegram == Some(config.clone()));
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/sync/v1/telegram",
+        Some(json!({"expected_revision":0,"command":{"action":"remove"}})),
+        Some(&device.access_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    state.telegram.stop().await;
+    drop(app);
+    drop(state);
+    assert!(
+        !std::fs::read(directory.path().join("state.aes"))
+            .unwrap()
+            .windows(config.bot_token.len())
+            .any(|v| v == config.bot_token.as_bytes())
+    );
+    let reopened = App::open(directory.path(), "https://sync.example.com").unwrap();
+    assert!(reopened.store.lock().await.saved.vault.telegram == Some(config));
+}
+
+#[tokio::test]
+async fn telegram_binding_capability_belongs_to_the_cloud_device_session() {
+    let (_directory, state, app, browser, device) = setup().await;
+    let config = localshelld_telegram::Config {
+        bot_token: "123456:abcdefghijklmnopqrstuvwxyz".into(),
+        bot_username: "fixture_bot".into(),
+        enabled: false,
+        binding: None,
+    };
+    {
+        let mut store = state.store.lock().await;
+        let mut next = store.saved.clone();
+        next.vault.telegram = Some(config);
+        store.commit(next).unwrap();
+    }
+    // Generate without starting an external Telegram poller in this test.
+    let (_, body) = call(
+        &app,
+        "POST",
+        "/sync/v1/telegram",
+        Some(json!({"expected_revision":0,"command":{"action":"status"}})),
+        Some(&device.access_token),
+    )
+    .await;
+    assert_eq!(body["configured"], true);
+    state.telegram.stop().await;
+    let sid = {
+        let store = state.store.lock().await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", device.access_token).parse().unwrap(),
+        );
+        state.authenticate(&store, &headers).unwrap().sid
+    };
+    // A fake code, even presented by another authenticated device, is rejected.
+    for token in [&device.access_token, &browser.access_token] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                "/sync/v1/telegram",
+                Some(
+                    json!({"expected_revision":0,"command":{"action":"bind_poll","code":"unknown"}})
+                ),
+                Some(token)
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert!(!sid.is_empty());
+    state.telegram.stop().await;
+}
+
+#[tokio::test]
 async fn vault_requires_authentication_and_origin_is_enforced() {
     let (_dir, _state, app, _, device) = setup().await;
     for (method, path, body) in [

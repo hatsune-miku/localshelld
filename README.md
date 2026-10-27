@@ -76,6 +76,8 @@ macOS 仍使用 launchd 和 Bash 3.2；授权弹窗走 Tao/Wry 的系统 WebView
 
 ## 构建与初始化
 
+Telegram bot 也可与 Windows/macOS 授权弹窗并列使用；配置、账号绑定和云同步方式见 [Telegram 授权](docs/telegram.md)。
+
 ```powershell
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build

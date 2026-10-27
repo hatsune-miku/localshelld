@@ -16,6 +16,7 @@ fs2 = "0.4"
 include_dir = "0.7"
 jsonwebtoken = { version = "9.3", default-features = false }
 localshelld-sync-protocol = { path = "../sync-protocol" }
+localshelld-telegram = { path = "../telegram" }
 mime_guess = "2"
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }

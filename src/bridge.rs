@@ -44,6 +44,10 @@ pub enum Request {
     Sync {
         action: crate::sync::Action,
     },
+    Telegram {
+        owner: String,
+        action: crate::telegram::Action,
+    },
     SecretPut {
         key: String,
         value: String,
@@ -283,11 +287,7 @@ async fn dispatch(state: &AppState, request: Request) -> Result<Value, ApiError>
         (DaemonMode::User, Request::Consent { prompt }) => {
             crate::consent::validate_request(&prompt.agent_name, &prompt.request_reason)?;
             crate::secrets::normalize_keys(&prompt.secret_keys)?;
-            let broker = state
-                .consent
-                .as_ref()
-                .ok_or_else(|| ApiError::unavailable("user daemon has no graphical desktop"))?;
-            serde_json::to_value(broker.request(prompt).await?)
+            serde_json::to_value(state.request_consent(prompt).await?)
                 .map_err(|_| ApiError::internal("decision serialization failed"))
         }
         (
@@ -315,6 +315,9 @@ async fn dispatch(state: &AppState, request: Request) -> Result<Value, ApiError>
             Ok(Value::Null)
         }
         (DaemonMode::User, Request::Sync { action }) => Box::pin(state.sync_action(action)).await,
+        (DaemonMode::User, Request::Telegram { owner, action }) => {
+            Box::pin(state.telegram_action(&owner, action)).await
+        }
         (DaemonMode::User, Request::SecretPut { key, value }) => {
             let value = zeroize::Zeroizing::new(value);
             Box::pin(state.put_secret(&key, &value)).await?;

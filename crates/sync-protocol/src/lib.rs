@@ -173,6 +173,54 @@ impl CredentialFile {
 pub struct Snapshot {
     pub revision: u64,
     pub credentials: BTreeMap<String, String>,
+    #[serde(default)]
+    pub telegram: Option<TelegramConfig>,
+}
+
+/// The second synchronized setting. Never exposed as an injectable credential.
+#[derive(
+    Clone, PartialEq, Eq, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop,
+)]
+#[serde(deny_unknown_fields)]
+pub struct TelegramConfig {
+    pub bot_token: String,
+    pub bot_username: String,
+    pub enabled: bool,
+    pub binding: Option<TelegramBinding>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, zeroize::Zeroize)]
+#[serde(deny_unknown_fields)]
+pub struct TelegramBinding {
+    pub user_id: i64,
+    pub chat_id: i64,
+}
+
+impl TelegramConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let (id, key) = self.bot_token.split_once(':').ok_or("invalid bot token")?;
+        if id.is_empty()
+            || id.len() > 20
+            || !id.bytes().all(|b| b.is_ascii_digit())
+            || !(20..=128).contains(&key.len())
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            || self.bot_username.is_empty()
+            || self.bot_username.len() > 64
+            || !self
+                .bot_username
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || self
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.user_id <= 0 || b.user_id != b.chat_id)
+        {
+            return Err("invalid Telegram bot configuration or private-chat binding");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
