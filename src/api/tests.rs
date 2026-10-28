@@ -161,7 +161,7 @@ async fn llms_is_public_plain_text_with_live_schemas_on_both_daemons() {
         let (_, capabilities) = request(&app, "GET", "/v1/capabilities", None).await;
         let operations = capabilities["operations"].as_array().unwrap();
         assert_eq!(published_schemas.len(), operations.len() * 2);
-        for (operation, schemas) in operations.iter().zip(published_schemas.chunks_exact(2)) {
+        for (operation, schemas) in operations.iter().zip(published_schemas.as_chunks::<2>().0) {
             assert!(operations_text.contains(&format!(
                 "### {} {}\n\nMCP tool: `{}`\n",
                 operation["method"].as_str().unwrap(),
