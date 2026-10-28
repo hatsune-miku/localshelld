@@ -1,5 +1,27 @@
 # HTTP 与 MCP API
 
+## stdio 接入
+
+推荐 Agent 宿主启动独立的 `trustd-stdio`，默认连接 `127.0.0.1:32120`；`--endpoint` 仅接受字面量 loopback SocketAddr。stdio 使用换行分隔的 JSON-RPC，stdout 只输出协议消息，诊断走 stderr。
+
+stdio 与下文的 HTTP/直接 MCP 业务语义相同，但输入／输出 schema 不同：
+
+| 操作 | stdio 的差异 |
+| --- | --- |
+| `enter_interactive` | 无 token 参数，授权响应不返回 handle；由接入进程保存 |
+| `run` / `secrets_get` / `destroy` | 不接受 handle，自动使用本接入进程的会话 |
+| `enter_preauthorized` | 仅在启动时配置 `--token-env <变量名>` 后出现，工具参数不含 token |
+| `revoke` | 同样只在配置 token 后出现；撤销该 token，不接受 token 参数 |
+| `secrets_list` | 与直接连接一致，只返回名称 |
+
+始终用当前连接的 `tools/list` 获取 schema，不要把下文 HTTP 的 handle/token 字段填入 stdio 工具。默认五项工具，配置 token 后为七项。显式明文读取仍要求存活会话及已授权 key。
+
+一个接入进程仅持有一个会话，已有会话时重复 enter 被拒绝；先 destroy 再更换授权。独立进程不共享全局 handle。宿主如果多个聊天共用一个进程，也会共享该会话，不能把进程级隔离说成聊天级隔离。预授权 token 必须单独分配，已知 `reused:true` 会被拒绝接管，不销毁原会话。
+
+stdio 取消通知按本进程的 requestId 定位，不需要 MCP HTTP 会话头。取消 run 销毁整个会话；取消尚在等待的授权会等待原授权请求返回并清理迟到的成功结果。stdin EOF/正常终止同样尝试清理；强杀、断电或 daemon 不可达不保证清理成功，需在管理页核对或撤销。授权失效和传输错误不触发自动授权或命令重试。
+
+以下章节描述 daemon 原有 HTTP 与 Streamable HTTP MCP 接口，这些接口仍需显式 token/handle。
+
 推荐用户 daemon：`http://127.0.0.1:32120`；系统 daemon 默认 `http://127.0.0.1:32119`。执行凭据放在 JSON body 中，不放 URL。两端升级时应使用相同版本。
 
 `GET /llms.txt` 在两个入口均无需鉴权，返回 `text/plain; charset=utf-8` 的 AI 易读接口文档，包含调用流程、平台参数、错误与取消语义，以及从实际接口定义生成的输入／输出 JSON Schema。默认地址为 `http://127.0.0.1:32119/llms.txt` 和 `http://127.0.0.1:32120/llms.txt`；仍保留 loopback Host/Origin 限制，不改变执行和管理接口的鉴权。
@@ -11,6 +33,7 @@
 | MCP 工具 | HTTP 接口 |
 |---|---|
 | `secrets_list` | `GET /v1/secrets/keys` |
+| `secrets_get` | `POST /v1/secrets/get` |
 | `enter_interactive` | `POST /v1/sessions/enter/interactive` |
 | `enter_preauthorized` | `POST /v1/sessions/enter/preauthorized` |
 | `run` | `POST /v1/commands/run` |
@@ -154,7 +177,11 @@ try {
 
 ### 环境变量凭据
 
-`GET /v1/secrets/keys` 无需授权，返回 `{"keys":["JENKINS_CI_TOKEN","OPENAI_API_KEY"]}`，只列名称。没有公开读取 value 的接口。
+`GET /v1/secrets/keys` 无需授权，返回 `{"keys":["JENKINS_CI_TOKEN","OPENAI_API_KEY"]}`，只列名称。
+
+`POST /v1/secrets/get` 与 MCP `secrets_get` 同步提供明文读取：请求 `{"handle":"<HANDLE>","key":"JENKINS_CI_TOKEN"}`，返回 `{"key":"JENKINS_CI_TOKEN","value":"..."}`。必须先通过任一 enter 将该 key 纳入 `secret_keys` 并获得授权；只有存活且未过期的会话可以读取自己的授权快照。未授权 key 返回 403，无效、过期、已销毁或已撤销的 handle 返回 401；关联的系统授权不可用时不使用本地快照兜底。后台更新或删除凭据不改变会话快照，重新进入后才读取新值。该接口使用 POST JSON body，响应保持 `Cache-Control: no-store`。
+
+MCP 简短说明明确：不鼓励使用，除非用户明确要求明文；通常优先使用环境变量注入。
 
 两个 MCP enter 工具及 HTTP enter 均接收可选 `secret_keys: string[]`。key 同时是环境变量名，符合 `[A-Z_][A-Z0-9_]{0,127}`；后端同样校验大写。最多保存及请求 64 个 key，重复请求名会去重排序。value 为 1–16,384 UTF-8 字节，不能含 NUL。`LOCALSHELLD_*`、`BASH_ENV`、`ENV`、`SHELLOPTS`、`BASHOPTS`、`CDPATH` 为 shell 运行时保留名称。
 
@@ -165,7 +192,7 @@ try {
 - 后台更换或删除凭据不改变已有快照。销毁后重新 enter 才读取新值，且需再次提供所需 key；未知 key 使新建失败，不创建部分会话。
 - 配对后统一使用用户 daemon 的凭据库，两端管理页通过已有加密桥访问同一库。未配对时使用本 daemon 的库；配对不会复制或迁移原独立库。系统端无法连接已配对的凭据库时不会回退到另一份值。
 
-这些值不由列表、enter 或会话元数据回传；管理页的显式文件导出会返回明文值。获得环境变量的 shell 及其子程序仍能主动打印、记录或发送它们，`run` 不提供防泄露隔离或可靠的任意输出脱敏。
+这些值不由列表、enter 或会话元数据回传；显式 `secrets_get` 和管理页文件导出会返回明文值。获得环境变量的 shell 及其子程序仍能主动打印、记录或发送它们，`run` 不提供防泄露隔离或可靠的任意输出脱敏。
 
 下列管理接口要求现有 10 分钟管理 session 的 Bearer header，执行 token 不能代替管理登录：
 
@@ -240,11 +267,12 @@ Master/TOTP 失败在每个进程实例内限制为 5 次/分钟；成功验证�
 
 `POST /mcp` 使用 JSON-RPC 2.0、MCP Streamable HTTP JSON 响应，协议版本 `2025-06-18`。支持 initialize、ping、tools/list、tools/call，以及 notifications/initialized、run 的 notifications/cancelled。
 
-工具列表只公布六个短名称：
+工具列表只公布七个短名称：
 
 | 工具 | 用途 |
 |---|---|
 | `secrets_list` | 无需授权列出凭据 key，不返回 value |
+| `secrets_get` | 读取会话已授权 key 的明文快照；不鼓励使用，除非用户明确要求 |
 | `enter_interactive` | 桌面／Telegram 交互式请求授权，无 token 参数 |
 | `enter_preauthorized` | 使用用户事先签发的 token 进入 |
 | `run` | 显式选择身份，执行单次命令并传入可选 stdin |

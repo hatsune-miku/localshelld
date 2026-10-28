@@ -19,7 +19,7 @@ impl Drop for Process {
 }
 
 fn cli(config: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_localshelld"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_trustd"));
     command.args(["init", "--config"]).arg(config);
     command
         .stdin(Stdio::piped())

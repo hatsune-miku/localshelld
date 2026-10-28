@@ -1,9 +1,35 @@
 [package]
-name = "localshelld"
+name = "trustd"
+autobins = false
+default-run = "trustd"
 version = "0.1.0"
 edition = "2024"
-description = "User-controlled local and privileged PowerShell and Bash sessions over HTTP and MCP"
+description = "User-controlled trust, execution identities and credentials for AI agents"
 license = "MIT"
+
+# Keep the Rust library identity stable for embedders; executable roles are separate.
+[lib]
+name = "localshelld"
+
+[[bin]]
+name = "trustd"
+path = "src/main.rs"
+
+[[bin]]
+name = "trustd-user"
+path = "src/bin/user.rs"
+
+[[bin]]
+name = "trustd-system"
+path = "src/bin/system.rs"
+
+[[bin]]
+name = "trustd-root"
+path = "src/bin/root.rs"
+
+[[bin]]
+name = "trustd-stdio"
+path = "src/bin/stdio.rs"
 
 [workspace]
 members = ["crates/native-dialog", "crates/native-process", "crates/sync-protocol", "crates/sync-server", "crates/telegram"]

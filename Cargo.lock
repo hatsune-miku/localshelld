@@ -1836,55 +1836,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
-name = "localshelld"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "directories",
- "flate2",
- "fs2",
- "gtk",
- "http-body-util",
- "include_dir",
- "localshelld-native-dialog",
- "localshelld-native-process",
- "localshelld-sync-protocol",
- "localshelld-telegram",
- "mime_guess",
- "openssl",
- "plist",
- "rand_core 0.6.4",
- "reqwest",
- "rustix",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tao",
- "tar",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "totp-rs",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "webauthn-rs",
- "windows-service",
- "wry",
- "zeroize",
- "zip",
-]
-
-[[package]]
 name = "localshelld-native-dialog"
 version = "0.1.0"
 dependencies = [
@@ -3744,6 +3695,55 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trustd"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "directories",
+ "flate2",
+ "fs2",
+ "gtk",
+ "http-body-util",
+ "include_dir",
+ "localshelld-native-dialog",
+ "localshelld-native-process",
+ "localshelld-sync-protocol",
+ "localshelld-telegram",
+ "mime_guess",
+ "openssl",
+ "plist",
+ "rand_core 0.6.4",
+ "reqwest",
+ "rustix",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tao",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "totp-rs",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webauthn-rs",
+ "windows-service",
+ "wry",
+ "zeroize",
+ "zip",
 ]
 
 [[package]]

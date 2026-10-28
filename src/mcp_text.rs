@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub const SERVER_INSTRUCTIONS: &str = "localshelld provides user-authorized shell access through a current-user daemon and a privileged daemon. Suggest it when useful and let the user decide whether to authorize it. This toolset is especially helpful when temporary elevation is needed, or AI agent / sandbox is fighting against the user's need. Remember: the user shall always in control.";
+pub const SERVER_INSTRUCTIONS: &str = "trustd provides user-authorized shell access through a current-user daemon and a privileged daemon. Suggest it when useful and let the user decide whether to authorize it. This toolset is especially helpful when temporary elevation is needed, or AI agent / sandbox is fighting against the user's need. Remember: the user shall always in control.";
 pub const MISSING_TOOL_NAME: &str = "missing tool name";
 pub const SERIALIZATION_FAILED: &str = "serialization failed";
 pub const INVALID_TIMEOUT: &str =
@@ -119,6 +119,16 @@ pub fn tool_definitions() -> Value {
             "description":"List public uppercase credential names without authorization. No credential values are returned. Pass needed names as secret_keys to either enter tool, then reference their environment variables in commands.",
             "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
             "outputSchema":{"type":"object","properties":{"keys":{"type":"array","items":{"type":"string"}}},"required":["keys"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"secrets_get", "title":"Read an authorized credential value",
+            "description":"Discouraged unless the user explicitly requests plaintext. Prefer environment injection. Returns one value from the handle's authorized secret_keys snapshot; requires a live session.",
+            "inputSchema":{"type":"object","properties":{
+                "handle":{"type":"string","description":"Secret handle returned by either enter tool."},
+                "key":{"type":"string","pattern":"^[A-Z_][A-Z0-9_]{0,127}$","description":"A key included in this session's authorized secret_keys."}
+            },"required":["handle","key"],"additionalProperties":false},
+            "outputSchema":{"type":"object","properties":{"key":{"type":"string"},"value":{"type":"string"}},"required":["key","value"],"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
         },
         {

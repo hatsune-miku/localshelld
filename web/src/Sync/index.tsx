@@ -127,7 +127,7 @@ export function Sync() {
       <main className="sync-page">
         <header className="sync-header">
           <h1 className="sync-title">凭据同步</h1>
-          <span className="sync-brand">localshelld</span>
+          <span className="sync-brand">trustd</span>
           {login && (
             <Button variant="ghost" onClick={logout} disabled={action.busy}>
               退出登录

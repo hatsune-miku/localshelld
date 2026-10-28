@@ -46,15 +46,20 @@ fn read_plan(path: &Path, digest: &str) -> Result<Plan> {
         "installation plan changed or exceeds the size limit"
     );
     let plan: Plan = serde_json::from_slice(&bytes)?;
-    ensure!(plan.protocol == 1, "unsupported installation plan");
+    ensure!(plan.protocol == 2, "unsupported installation plan");
     ensure!(
         plan.system_bind.ip().is_loopback() && plan.system_bind.port() != 0,
         "invalid system endpoint"
     );
     ensure!(
-        digest_file(&std::env::current_exe()?)? == plan.binary_hash,
-        "installer binary does not match the approved plan"
+        plan.binaries.digest()? == plan.binary_hash,
+        "bundle does not match the approved plan"
     );
+    plan.binaries.verify(
+        std::env::current_exe()?
+            .parent()
+            .context("missing bundle directory")?,
+    )?;
     #[cfg(windows)]
     {
         ensure!(
@@ -136,28 +141,19 @@ fn apply_plan(plan: &Plan, paths: &MachinePaths) -> Result<()> {
     prepare_directory(&versions, true)?;
     let executable = paths.executable(&plan.binary_hash)?;
     prepare_directory(executable.parent().unwrap(), true)?;
-    if executable.try_exists()? {
-        regular(&executable)?;
-        ensure!(
-            digest_file(&executable)? == plan.binary_hash,
-            "existing version directory contains a different executable"
-        );
-    } else {
-        // create_new + protected parent avoids replacing an attacker-controlled
-        // symlink/hardlink or an executable in use by the maintenance UI.
-        let mut source = fs::File::open(std::env::current_exe()?)?;
-        let mut target = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&executable)?;
-        std::io::copy(&mut source, &mut target)?;
-        target.sync_all()?;
+    let directory = executable.parent().context("missing version directory")?;
+    plan.binaries.copy(
+        std::env::current_exe()?
+            .parent()
+            .context("missing bundle directory")?,
+        directory,
+    )?;
+    for name in plan.binaries.0.keys() {
+        protect(&directory.join(name), false, true)?;
     }
-    protect(&executable, false, true)?;
-    ensure!(
-        digest_file(&executable)? == plan.binary_hash,
-        "installed executable digest mismatch"
-    );
+    plan.binaries.verify(directory)?;
+    let system_executable =
+        super::super::bundle::beside(&executable, super::super::bundle::PRIVILEGED)?;
 
     let backups = paths.data.join("backups");
     prepare_directory(&backups, false)?;
@@ -210,10 +206,11 @@ fn apply_plan(plan: &Plan, paths: &MachinePaths) -> Result<()> {
             }
         }
         verify_preserved_state(&backup, &paths.config)?;
-        super::super::install_system_at(&executable, &paths.config)?;
-        super::super::installation::wait_healthy(
+        super::super::install_system_at(&system_executable, &paths.config)?;
+        super::super::installation::wait_healthy_version(
             config.bind,
             "privileged",
+            Some(localshelld::VERSION),
             Duration::from_secs(30),
         )?;
         Ok(())
@@ -248,8 +245,11 @@ fn apply_plan(plan: &Plan, paths: &MachinePaths) -> Result<()> {
         // Same-account elevated management can replace an administrator-owned
         // old task, but the new task still uses InteractiveToken/LeastPrivilege.
         super::super::user_service::uninstall()?;
-        super::super::user_service::install_at(&executable, &plan.user_config)
-            .context("system service is ready, but user autostart failed; rerun repair")?;
+        super::super::user_service::install_at(
+            &super::super::bundle::beside(&executable, super::super::bundle::USER)?,
+            &plan.user_config,
+        )
+        .context("system service is ready, but user autostart failed; rerun repair")?;
     }
     // Public receipt contains only paths and successful checks, never secret
     // values or password verifiers. The UI can inspect it without elevation.

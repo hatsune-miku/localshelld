@@ -14,17 +14,17 @@ impl MachinePaths {
     pub fn resolve() -> Result<Self> {
         #[cfg(windows)]
         let (program, data) = (
-            localshelld_native_process::program_files_directory()?.join("localshelld"),
+            localshelld_native_process::program_files_directory()?.join("trustd"),
             localshelld_native_process::program_data_directory()?.join("localshelld"),
         );
         #[cfg(target_os = "macos")]
         let (program, data) = (
-            PathBuf::from("/Library/localshelld"),
+            PathBuf::from("/Library/trustd"),
             PathBuf::from("/Library/Application Support/localshelld"),
         );
         #[cfg(target_os = "linux")]
         let (program, data) = (
-            PathBuf::from("/opt/localshelld"),
+            PathBuf::from("/opt/trustd"),
             PathBuf::from("/etc/localshelld"),
         );
         let config = data.join("system/config.toml");
@@ -45,9 +45,9 @@ impl MachinePaths {
             .join("versions")
             .join(hash)
             .join(if cfg!(windows) {
-                "localshelld.exe"
+                "trustd.exe"
             } else {
-                "localshelld"
+                "trustd"
             }))
     }
 

@@ -188,7 +188,7 @@ async fn dispatch(state: &AppState, method: &str, params: Value) -> Result<Value
         "initialize" => Ok(json!({
             "protocolVersion": "2025-06-18",
             "capabilities": { "tools": { "listChanged": false } },
-            "serverInfo": { "name": "localshelld", "version": crate::VERSION },
+            "serverInfo": { "name": "trustd", "version": crate::VERSION },
             "instructions": format!("{} Connected daemon: {:?}.", server_instructions(), state.mode)
         })),
         "ping" => Ok(json!({})),
@@ -234,6 +234,7 @@ mod tests {
         let text = definitions.to_string();
         for tool in [
             "secrets_list",
+            "secrets_get",
             "enter_interactive",
             "enter_preauthorized",
             "run",
@@ -246,6 +247,19 @@ mod tests {
         assert!(server_instructions().contains(crate::shell::ShellKind::native().name()));
         assert!(text.contains("Respect the user's personal privacy."));
         assert!(text.contains("reused"));
+        let plaintext = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "secrets_get")
+            .unwrap();
+        assert!(plaintext["description"].as_str().unwrap().contains(
+            "Discouraged unless the user explicitly requests plaintext. Prefer environment injection."
+        ));
+        assert_eq!(
+            plaintext["inputSchema"]["required"],
+            json!(["handle", "key"])
+        );
     }
 
     #[test]
@@ -267,7 +281,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn secret_tools_only_list_names_and_enter_never_returns_values() {
+    async fn secret_listing_and_enter_never_return_values_implicitly() {
         let mut auth = crate::auth::AuthManager::new("unused".into(), None);
         let token = auth.issue_token(None).unwrap().0;
         let state = AppState::new(crate::config::Config::default(), auth);
@@ -299,6 +313,23 @@ mod tests {
             json!(["JENKINS_CI_TOKEN"])
         );
         assert!(!entered.to_string().contains("fixture-secret-123"));
+        let revealed = call_tool(
+            &state,
+            json!({"name":"secrets_get","arguments":{
+                "handle":entered["structuredContent"]["handle"],"key":"JENKINS_CI_TOKEN"
+            }}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            revealed["structuredContent"],
+            json!({"key":"JENKINS_CI_TOKEN","value":"fixture-secret-123"})
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(revealed["content"][0]["text"].as_str().unwrap())
+                .unwrap(),
+            revealed["structuredContent"]
+        );
         state.shutdown().await;
     }
 

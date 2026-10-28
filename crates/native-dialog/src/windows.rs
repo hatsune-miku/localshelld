@@ -631,7 +631,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
     // SAFETY: all controls exist. Messages use integer values, not borrowed
     // pointers. The UI timer only updates text; the broker owns authorization.
     unsafe {
-        SetWindowTextW(hwnd, w!("本机命令授权 — localshelld"));
+        SetWindowTextW(hwnd, w!("本机命令授权 — trustd"));
         SendMessageW(GetDlgItem(hwnd, NOTE), EM_SETLIMITTEXT, NOTE_LIMIT, 0);
         SendMessageW(hwnd, DM_SETDEFID, IDCANCEL as usize, 0);
         state.dpi.set(GetDpiForWindow(hwnd).max(96));

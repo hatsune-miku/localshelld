@@ -118,7 +118,7 @@ impl Service {
             .clone()
             .ok_or("请先保存 Bot Token。")?;
         let binding = config.binding.as_ref().ok_or("请先绑定 Telegram 账号。")?;
-        self.inner.api.call(&config.bot_token,"sendMessage",json!({"chat_id":binding.chat_id,"text":"localshelld Telegram 授权已就绪。此消息不授予任何执行权限。"})).await?;
+        self.inner.api.call(&config.bot_token,"sendMessage",json!({"chat_id":binding.chat_id,"text":"trustd Telegram 授权已就绪。此消息不授予任何执行权限。"})).await?;
         Ok(())
     }
     pub async fn status(&self) -> Value {
@@ -226,7 +226,7 @@ impl Service {
             prompt.secret_keys.join(", ")
         };
         let content = format!(
-            "localshelld 授权\n设备：{device}\n代理：{}\n权限：{}\n凭据名称：{keys}\n\n{}\n\n60 秒内有效。回复本消息可添加备注。",
+            "trustd 授权\n设备：{device}\n代理：{}\n权限：{}\n凭据名称：{keys}\n\n{}\n\n60 秒内有效。回复本消息可添加备注。",
             prompt.agent_name, prompt.scope, prompt.request_reason
         );
         let chunks = chunks(&content, 3400);

@@ -15,23 +15,22 @@ use localshelld::{
     auth::{AuthManager, create_totp, generate_totp_secret, hash_password},
     config::{
         Config, USER_PORT, default_config_path, load_or_create_seal_key, seal, seal_key_path,
-        unseal, user_config_path,
+        user_config_path,
     },
-    server::{AppState, router},
+    server::AppState,
 };
 use zeroize::{Zeroize, Zeroizing};
 
+mod bundle;
 mod installation;
 #[cfg(any(target_os = "macos", test))]
 mod launchd;
 mod maintenance;
 mod update;
 mod user_service;
-#[cfg(windows)]
-mod windows_service_host;
 
 #[derive(Parser)]
-#[command(version = localshelld::VERSION, about)]
+#[command(name = "trustd", version = localshelld::VERSION, about = "Install, configure and maintain trustd")]
 struct Cli {
     #[command(subcommand)]
     command: CommandKind,
@@ -74,20 +73,6 @@ enum CommandKind {
         #[arg(long)]
         password_stdin: bool,
     },
-    /// Run the system or current-user HTTP/MCP daemon.
-    Serve {
-        /// Run as the current non-elevated user, routing elevated execution to the system daemon.
-        #[arg(long, conflicts_with = "allow_unelevated")]
-        user: bool,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        /// Development only: permit starting without administrator/root identity.
-        #[arg(long)]
-        allow_unelevated: bool,
-        /// Disable desktop prompts (ordinary shell access still works).
-        #[arg(long)]
-        headless: bool,
-    },
     /// Register and start both daemons, then complete trust pairing in the management UI.
     Install {
         /// Install only the current non-elevated user's autostart daemon.
@@ -123,17 +108,6 @@ enum CommandKind {
     },
     /// Check for or install an update from the official GitHub Releases.
     Update(update::Options),
-    /// Internal updater; only a prepared, local update plan is accepted.
-    #[cfg(windows)]
-    #[command(hide = true)]
-    ApplyUpdate { plan: PathBuf },
-    /// Internal entry point used by the Windows Service Control Manager.
-    #[cfg(windows)]
-    #[command(hide = true)]
-    Service {
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
 }
 
 fn main() -> Result<()> {
@@ -143,10 +117,7 @@ fn main() -> Result<()> {
         Cli::parse().command
     };
     #[cfg(windows)]
-    if matches!(
-        &command,
-        CommandKind::Serve { user: true, .. } | CommandKind::Maintenance { no_open: false }
-    ) {
+    if matches!(&command, CommandKind::Maintenance { no_open: false }) {
         localshelld_native_dialog::detach_owned_console()
             .context("failed to detach the user daemon's standalone console")?;
     }
@@ -157,30 +128,6 @@ fn main() -> Result<()> {
         )
         .init();
     let runtime = tokio::runtime::Runtime::new()?;
-    if let CommandKind::Serve {
-        user: true,
-        config,
-        headless: false,
-        ..
-    } = &command
-        && localshelld::desktop::available()
-    {
-        require_user()?;
-        let path = mode_config_path(config.clone(), true)?;
-        let desktop = localshelld::desktop::Desktop::new()?;
-        let broker = desktop.broker();
-        let stop = desktop.stop_callback();
-        runtime.spawn(async move {
-            let result =
-                serve_mode_with_consent_until(path, false, true, Some(broker), shutdown_signal())
-                    .await;
-            if let Err(error) = &result {
-                tracing::error!(%error, "user daemon stopped");
-            }
-            stop(if result.is_ok() { 0 } else { 1 });
-        });
-        desktop.run();
-    }
     runtime.block_on(run_command(command))
 }
 
@@ -271,20 +218,6 @@ async fn run_command(command: CommandKind) -> Result<()> {
             password_stdin,
             user,
         ),
-        CommandKind::Serve {
-            user,
-            config,
-            allow_unelevated,
-            headless: _,
-        } => {
-            serve_mode_until(
-                mode_config_path(config, user)?,
-                allow_unelevated,
-                user,
-                shutdown_signal(),
-            )
-            .await
-        }
         CommandKind::Install {
             config,
             user,
@@ -325,12 +258,6 @@ async fn run_command(command: CommandKind) -> Result<()> {
         CommandKind::Update(options) => {
             tokio::task::spawn_blocking(move || update::run(options)).await?
         }
-        #[cfg(windows)]
-        CommandKind::ApplyUpdate { plan } => {
-            tokio::task::spawn_blocking(move || update::apply_helper(&plan)).await?
-        }
-        #[cfg(windows)]
-        CommandKind::Service { config } => windows_service_host::dispatch(config_path(config)?),
     }
 }
 
@@ -448,134 +375,7 @@ fn initialize_config(
     Ok(())
 }
 
-#[cfg(windows)]
-async fn serve_until<F>(path: PathBuf, allow_unelevated: bool, shutdown: F) -> Result<()>
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    serve_mode_until(path, allow_unelevated, false, shutdown).await
-}
-
-async fn serve_mode_until<F>(
-    path: PathBuf,
-    allow_unelevated: bool,
-    user: bool,
-    shutdown: F,
-) -> Result<()>
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    serve_mode_with_consent_until(path, allow_unelevated, user, None, shutdown).await
-}
-
-async fn serve_mode_with_consent_until<F>(
-    path: PathBuf,
-    allow_unelevated: bool,
-    user: bool,
-    consent: Option<localshelld::consent::ConsentBroker>,
-    shutdown: F,
-) -> Result<()>
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    if user {
-        require_user()?;
-    } else if !allow_unelevated && !is_elevated()? {
-        bail!(
-            "localshelld must run as Administrator/root (or pass --allow-unelevated for development only)"
-        );
-    }
-    let config = Config::load(&path)?;
-    let totp_secret = match &config.totp_secret {
-        Some(secret) => {
-            let key = load_or_create_seal_key(&seal_key_path(&path))?;
-            Some(unseal(secret, &key)?)
-        }
-        None => None,
-    };
-    let auth = AuthManager::new(config.password_hash.clone(), totp_secret);
-    tracing::info!(bind = %config.bind, "runtime token store initialized");
-    let listener = tokio::net::TcpListener::bind(config.bind).await?;
-    println!("localshelld management UI: http://{}/", config.bind);
-    let mut state = if user {
-        AppState::user(config, auth)?
-    } else {
-        AppState::new(config, auth)
-    }
-    .with_storage(path)?;
-    if let Some(consent) = consent {
-        state = state.with_consent(consent);
-    }
-    state.start_sync_worker().await;
-    axum::serve(listener, router(state.clone()))
-        .with_graceful_shutdown(async move {
-            shutdown.await;
-            state.shutdown().await;
-        })
-        .await?;
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            signal.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
-}
-
-fn is_elevated() -> Result<bool> {
-    #[cfg(unix)]
-    {
-        let output = Command::new("/usr/bin/id")
-            .arg("-u")
-            .output()
-            .context("failed to run id -u")?;
-        if !output.status.success() {
-            bail!("failed to inspect Unix process identity");
-        }
-        let uid: u32 = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .context("invalid Unix process identity")?;
-        Ok(uid == 0)
-    }
-    #[cfg(windows)]
-    {
-        // Unlike `net session`, this does not depend on the Server service being
-        // enabled. Failure to inspect the access token must never mean "user".
-        let output = windows_command("WindowsPowerShell/v1.0/powershell.exe")?
-            .args(["-NoProfile", "-NonInteractive", "-Command",
-                "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
-            .output().context("failed to inspect Windows process identity")?;
-        if !output.status.success() {
-            bail!("failed to inspect Windows process identity");
-        }
-        match String::from_utf8_lossy(&output.stdout).trim() {
-            "True" => Ok(true),
-            "False" => Ok(false),
-            _ => bail!("unexpected Windows process identity response"),
-        }
-    }
-}
-
-fn require_user() -> Result<()> {
-    if is_elevated()? {
-        bail!(
-            "--user must run from a non-elevated user terminal; refusing root/Administrator identity"
-        );
-    }
-    Ok(())
-}
+use localshelld::daemon::{is_elevated, require_user, shutdown_signal};
 
 #[cfg(windows)]
 fn windows_command(relative: &str) -> Result<Command> {
@@ -592,7 +392,7 @@ fn install_system(config_path: PathBuf) -> Result<()> {
         .canonicalize()
         .context("failed to resolve configuration path")?;
     Config::load(&config_path)?;
-    let executable = std::env::current_exe()?;
+    let executable = bundle::sibling(bundle::PRIVILEGED)?;
     install_system_at(&executable, &config_path)
 }
 
@@ -612,7 +412,7 @@ fn install_system_at(executable: &std::path::Path, config_path: &std::path::Path
     install_windows_service(executable, &config_path)?;
     #[cfg(target_os = "macos")]
     launchd::install(executable, &config_path)?;
-    println!("localshelld service installed and started.");
+    println!("trustd service installed and started.");
     Ok(())
 }
 
@@ -638,8 +438,13 @@ fn uninstall_system() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn install_systemd(executable: &Path, config: &Path) -> Result<()> {
+    let command = if executable.file_stem().and_then(|s| s.to_str()) == Some("trustd-root") {
+        ""
+    } else {
+        "serve "
+    };
     let unit = format!(
-        "[Unit]\nDescription=localshelld privileged Bash broker\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} serve --config {}\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=false\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=trustd root daemon\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} {command}--config {}\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=false\n\n[Install]\nWantedBy=multi-user.target\n",
         systemd_escape(executable),
         systemd_escape(config)
     );
@@ -670,8 +475,13 @@ fn systemd_escape(path: &Path) -> String {
 
 #[cfg(windows)]
 fn install_windows_service(executable: &Path, config: &Path) -> Result<()> {
+    let command = if executable.file_stem().and_then(|s| s.to_str()) == Some("trustd-system") {
+        ""
+    } else {
+        "service "
+    };
     let bin_path = format!(
-        "\"{}\" service --config \"{}\"",
+        "\"{}\" {command}--config \"{}\"",
         executable.display(),
         config.display()
     );
@@ -683,7 +493,7 @@ fn install_windows_service(executable: &Path, config: &Path) -> Result<()> {
         "start=",
         "auto",
         "DisplayName=",
-        "localshelld",
+        "trustd SYSTEM daemon",
     ]))?;
     checked(windows_command("sc.exe")?.args([
         "description",
@@ -808,12 +618,11 @@ mod tests {
 
     #[test]
     fn user_mode_has_separate_configuration_and_no_elevation_bypass() {
-        for command in ["init", "serve", "install", "uninstall"] {
-            assert!(Cli::try_parse_from(["localshelld", command, "--user"]).is_ok());
+        for command in ["init", "install", "uninstall"] {
+            assert!(Cli::try_parse_from(["trustd", command, "--user"]).is_ok());
         }
-        assert!(
-            Cli::try_parse_from(["localshelld", "serve", "--user", "--allow-unelevated"]).is_err()
-        );
+        assert!(Cli::try_parse_from(["trustd", "serve"]).is_err());
+        assert!(Cli::try_parse_from(["trustd", "service"]).is_err());
         assert_ne!(
             mode_config_path(None, true).unwrap(),
             mode_config_path(None, false).unwrap()
@@ -822,7 +631,7 @@ mod tests {
 
     #[test]
     fn uninstall_defaults_to_both_daemons_and_rejects_conflicting_scopes() {
-        let cli = Cli::try_parse_from(["localshelld", "uninstall"]).unwrap();
+        let cli = Cli::try_parse_from(["trustd", "uninstall"]).unwrap();
         assert!(matches!(
             cli.command,
             CommandKind::Uninstall {
@@ -830,7 +639,7 @@ mod tests {
                 system_only: false
             }
         ));
-        let cli = Cli::try_parse_from(["localshelld", "uninstall", "--user"]).unwrap();
+        let cli = Cli::try_parse_from(["trustd", "uninstall", "--user"]).unwrap();
         assert!(matches!(
             cli.command,
             CommandKind::Uninstall {
@@ -838,7 +647,7 @@ mod tests {
                 system_only: false
             }
         ));
-        let cli = Cli::try_parse_from(["localshelld", "uninstall", "--system-only"]).unwrap();
+        let cli = Cli::try_parse_from(["trustd", "uninstall", "--system-only"]).unwrap();
         assert!(matches!(
             cli.command,
             CommandKind::Uninstall {
@@ -846,36 +655,24 @@ mod tests {
                 system_only: true
             }
         ));
-        assert!(
-            Cli::try_parse_from(["localshelld", "uninstall", "--user", "--system-only"]).is_err()
-        );
+        assert!(Cli::try_parse_from(["trustd", "uninstall", "--user", "--system-only"]).is_err());
     }
 
     #[test]
     fn install_defaults_to_both_daemons_with_explicit_single_identity_options() {
         assert!(matches!(
-            Cli::try_parse_from(["localshelld", "install"])
-                .unwrap()
-                .command,
+            Cli::try_parse_from(["trustd", "install"]).unwrap().command,
             CommandKind::Install {
                 user: false,
                 system_only: false,
                 ..
             }
         ));
-        assert!(Cli::try_parse_from(["localshelld", "install", "--system-only"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["localshelld", "install", "--user-config", "user.toml"]).is_ok()
-        );
+        assert!(Cli::try_parse_from(["trustd", "install", "--system-only"]).is_ok());
+        assert!(Cli::try_parse_from(["trustd", "install", "--user-config", "user.toml"]).is_ok());
         for arguments in [
             vec!["localshelld", "install", "--user", "--system-only"],
-            vec![
-                "localshelld",
-                "install",
-                "--user",
-                "--user-config",
-                "user.toml",
-            ],
+            vec!["trustd", "install", "--user", "--user-config", "user.toml"],
             vec![
                 "localshelld",
                 "install",
@@ -890,7 +687,7 @@ mod tests {
 
     #[test]
     fn parses_update_options_and_rejects_ambiguous_downgrades() {
-        assert!(Cli::try_parse_from(["localshelld", "update", "--check", "--prerelease"]).is_ok());
+        assert!(Cli::try_parse_from(["trustd", "update", "--check", "--prerelease"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "localshelld",
@@ -901,10 +698,9 @@ mod tests {
             ])
             .is_ok()
         );
-        assert!(Cli::try_parse_from(["localshelld", "update", "--allow-downgrade"]).is_err());
+        assert!(Cli::try_parse_from(["trustd", "update", "--allow-downgrade"]).is_err());
         assert!(
-            Cli::try_parse_from(["localshelld", "update", "--tag", "v0.1.0", "--prerelease"])
-                .is_err()
+            Cli::try_parse_from(["trustd", "update", "--tag", "v0.1.0", "--prerelease"]).is_err()
         );
     }
 }

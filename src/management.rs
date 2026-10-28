@@ -383,7 +383,7 @@ fn webauthn(state: &AppState) -> Result<Webauthn, ApiError> {
         .map_err(|_| ApiError::internal("invalid passkey origin"))?;
     WebauthnBuilder::new("localhost", &origin)
         .map_err(|_| ApiError::internal("WebAuthn initialization failed"))?
-        .rp_name("localshelld")
+        .rp_name("trustd")
         .allow_any_port(false)
         .build()
         .map_err(|_| ApiError::internal("WebAuthn initialization failed"))

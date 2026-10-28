@@ -16,14 +16,14 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: localshelld-windows-x86_64
-            binary: target/release/localshelld.exe
+            artifact: trustd-windows-x86_64
+            binary: target/release/trustd.exe
           - os: ubuntu-latest
-            artifact: localshelld-linux-x86_64
-            binary: target/release/localshelld
+            artifact: trustd-linux-x86_64
+            binary: target/release/trustd
           - os: macos-15
-            artifact: localshelld-macos-aarch64
-            binary: target/release/localshelld
+            artifact: trustd-macos-aarch64
+            binary: target/release/trustd
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -55,14 +55,18 @@ jobs:
         env:
           BINARY: ${{ matrix.binary }}
         run: |
-          actual="$("$BINARY" --version | tr -d '\r')"
-          test "$actual" = "localshelld ${LOCALSHELLD_RELEASE_TAG#v}"
-          printf '%s\n' "$actual" > target/release/release-version.txt
+          bash scripts/verify-release.sh
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
             ${{ matrix.binary }}
+            target/release/trustd-user
+            target/release/trustd-user.exe
+            target/release/trustd-stdio
+            target/release/trustd-stdio.exe
+            target/release/trustd-system.exe
+            target/release/trustd-root
             target/release/release-version.txt
 
   publish:

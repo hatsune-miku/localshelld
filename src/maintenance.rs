@@ -46,6 +46,7 @@ struct Plan {
     protocol: u32,
     operation: Operation,
     binary_hash: String,
+    binaries: super::bundle::Manifest,
     password_hash: Option<String>,
     owner: String,
     user_config: PathBuf,
@@ -72,6 +73,7 @@ struct Inner {
     paths: MachinePaths,
     executable: PathBuf,
     binary_hash: String,
+    binaries: super::bundle::Manifest,
     user_config: PathBuf,
     owner: String,
     busy: AtomicBool,
@@ -87,7 +89,11 @@ pub async fn run(no_open: bool) -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let executable = std::env::current_exe()?.canonicalize()?;
     let hash_path = executable.clone();
-    let binary_hash = tokio::task::spawn_blocking(move || digest_file(&hash_path)).await??;
+    let binaries = tokio::task::spawn_blocking(move || {
+        super::bundle::Manifest::read(hash_path.parent().context("missing bundle directory")?)
+    })
+    .await??;
+    let binary_hash = binaries.digest()?;
     let state = Arc::new(Inner {
         token: format!(
             "{}{}",
@@ -98,6 +104,7 @@ pub async fn run(no_open: bool) -> Result<()> {
         paths: MachinePaths::resolve()?,
         executable,
         binary_hash,
+        binaries,
         user_config: user_config_path()?,
         owner: platform::owner()?,
         busy: AtomicBool::new(false),
@@ -328,9 +335,10 @@ fn execute(
         None
     };
     let plan = Plan {
-        protocol: 1,
+        protocol: 2,
         operation,
         binary_hash: state.binary_hash.clone(),
+        binaries: state.binaries.clone(),
         password_hash,
         owner: state.owner.clone(),
         user_config: state.user_config.clone(),
@@ -340,19 +348,19 @@ fn execute(
         ),
     };
     let stage = tempfile::Builder::new()
-        .prefix("localshelld-maintenance-")
+        .prefix("trustd-maintenance-")
         .tempdir()?;
     platform::private(stage.path(), true)?;
-    let helper = stage.path().join(if cfg!(windows) {
-        "localshelld.exe"
-    } else {
-        "localshelld"
-    });
-    std::fs::copy(&state.executable, &helper)?;
-    ensure!(
-        digest_file(&helper)? == plan.binary_hash,
-        "installer executable changed while staging"
-    );
+    let helper = stage
+        .path()
+        .join(super::bundle::filename(super::bundle::MAINTENANCE));
+    state.binaries.copy(
+        state
+            .executable
+            .parent()
+            .context("missing bundle directory")?,
+        stage.path(),
+    )?;
     let bytes = Zeroizing::new(serde_json::to_vec(&plan)?);
     let path = stage.path().join("plan.json");
     std::fs::write(&path, &*bytes)?;
@@ -368,19 +376,26 @@ fn execute(
     if operation == Operation::Install {
         set_stage(state, "user_service");
         let executable = state.paths.executable(&state.binary_hash)?;
+        let user_executable = super::bundle::beside(&executable, super::bundle::USER)?;
         #[cfg(not(windows))]
         {
             super::user_service::uninstall()?;
-            super::user_service::install_at(&executable, &state.user_config)?;
+            super::user_service::install_at(&user_executable, &state.user_config)?;
         }
         let user = Config::load(&state.user_config)?;
-        super::installation::wait_healthy(
+        super::installation::wait_healthy_version(
             user.privileged_daemon,
             "privileged",
+            Some(localshelld::VERSION),
             Duration::from_secs(30),
         )?;
-        super::installation::wait_healthy(user.bind, "user", Duration::from_secs(30))?;
-        super::user_service::verify_running_at(&executable, &state.user_config)?;
+        super::installation::wait_healthy_version(
+            user.bind,
+            "user",
+            Some(localshelld::VERSION),
+            Duration::from_secs(30),
+        )?;
+        super::user_service::verify_running_at(&user_executable, &state.user_config)?;
         platform::shortcut(&executable)?;
     } else {
         #[cfg(not(windows))]

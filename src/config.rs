@@ -78,7 +78,7 @@ impl Config {
             );
         }
         if self.password_hash.is_empty() {
-            bail!("Master Password is not initialized; run `localshelld init`");
+            bail!("Master Password is not initialized; run `trustd init`");
         }
         if self.max_output_bytes < 1024 {
             bail!("max_output_bytes must be at least 1024");

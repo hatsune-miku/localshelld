@@ -30,7 +30,7 @@ jobs:
       - name: Download all platform artifacts from CI
         uses: actions/download-artifact@v4
         with:
-          pattern: localshelld-*
+          pattern: trustd-*
           path: binaries
           merge-multiple: false
           run-id: ${{ github.event.workflow_run.id }}
@@ -67,7 +67,7 @@ jobs:
           gh release create "$RC_TAG" assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$TARGET_SHA" \
-            --title "localshelld $RC_TAG" \
+            --title "trustd $RC_TAG" \
             --generate-notes \
             --prerelease=false \
             --latest

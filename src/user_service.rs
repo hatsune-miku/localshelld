@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 mod windows_uninstall;
 
 pub fn install(config: &Path) -> Result<()> {
-    install_at(&std::env::current_exe()?, config)
+    install_at(&super::bundle::sibling(super::bundle::USER)?, config)
 }
 
 pub(crate) fn install_at(executable: &Path, config: &Path) -> Result<()> {
@@ -30,7 +30,7 @@ pub(crate) fn install_at(executable: &Path, config: &Path) -> Result<()> {
         }
     }
     install_native(executable, &config)?;
-    println!("localshelld user daemon installed and started for this user.");
+    println!("trustd user daemon installed and started for this user.");
     Ok(())
 }
 
@@ -51,7 +51,7 @@ pub fn uninstall() -> Result<()> {
 /// A responding port alone is insufficient: a foreground process might already
 /// own it while the newly installed autostart daemon failed to start.
 pub fn verify_running(config: &Path) -> Result<()> {
-    verify_running_at(&std::env::current_exe()?, config)
+    verify_running_at(&super::bundle::sibling(super::bundle::USER)?, config)
 }
 
 pub(crate) fn verify_running_at(executable: &Path, config: &Path) -> Result<()> {
@@ -113,7 +113,7 @@ fn systemd_unit(executable: &Path, config: &Path) -> String {
             .replace('$', "$$")
     };
     format!(
-        "[Unit]\nDescription=localshelld current-user daemon\n\n[Service]\nExecStart=\"{}\" serve --user --config \"{}\"\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=trustd current-user daemon\n\n[Service]\nExecStart=\"{}\" --config \"{}\"\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
         quote(executable),
         quote(config)
     )
@@ -185,7 +185,7 @@ fn launch_agent(executable: &Path, config: &Path, directory: &Path) -> String {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>dev.localshelld.user</string>
-<key>ProgramArguments</key><array><string>{}</string><string>serve</string><string>--user</string><string>--config</string><string>{}</string></array>
+<key>ProgramArguments</key><array><string>{}</string><string>--config</string><string>{}</string></array>
 <key>WorkingDirectory</key><string>{}</string>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string></dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
@@ -319,7 +319,7 @@ fn scheduled_task(executable: &Path, config: &Path, sid: &str) -> String {
 <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers>
 <Principals><Principal id="User"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
 <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>
-<Actions Context="User"><Exec><Command>{}</Command><Arguments>serve --user --config &quot;{}&quot;</Arguments></Exec></Actions>
+<Actions Context="User"><Exec><Command>{}</Command><Arguments>--config &quot;{}&quot;</Arguments></Exec></Actions>
 </Task>
 "#,
         xml(&executable.to_string_lossy()),
@@ -433,14 +433,15 @@ mod tests {
         assert!(task.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(task.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(task.contains("A &amp; B"));
-        assert!(task.contains("serve --user --config"));
+        assert!(task.contains("--config"));
         let agent = launch_agent(exe, config, Path::new("/home/A & B"));
         assert!(!agent.contains("<key>UserName</key>"));
-        assert!(agent.contains("<string>--user</string>"));
+        assert!(!agent.contains("<string>--user</string>"));
+        assert!(agent.contains("<string>--config</string>"));
         assert!(agent.contains("A &amp; B"));
         let unit = systemd_unit(Path::new("/home/a%u/$bin"), config);
         assert!(unit.contains("a%%u/$$bin"));
-        assert!(unit.contains("serve --user --config \"/home/A & B/config.toml\""));
+        assert!(unit.contains("--config \"/home/A & B/config.toml\""));
     }
 
     #[cfg(windows)]

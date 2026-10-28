@@ -24,7 +24,7 @@ function Remove-LocalshelldUserTask($folder, [string]$name, [string]$sid, [int]$
         throw 'User task has a different identity or privilege level; registration was preserved.'
     }
     if ($definition.Actions.Count -ne 1 -or $definition.Actions.Item(1).Type -ne 0 -or
-        $definition.Actions.Item(1).Arguments -cnotmatch '^serve --user --config "[^"\r\n]+"$') {
+        $definition.Actions.Item(1).Arguments -cnotmatch '^(?:serve --user )?--config "[^"\r\n]+"$') {
         throw 'User task has a different action; registration was preserved.'
     }
 

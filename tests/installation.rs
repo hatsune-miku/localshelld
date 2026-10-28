@@ -11,7 +11,7 @@ use localshelld::{
 };
 
 fn prepare(path: &Path, endpoint: &str, input: &str) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_localshelld"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_trustd"));
     command
         .args(["setup-user", "--privileged-daemon", endpoint, "--config"])
         .arg(path)

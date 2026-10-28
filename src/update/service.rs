@@ -10,7 +10,6 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::Lifecycle;
 #[cfg(unix)]
 use super::checked;
 #[cfg(target_os = "macos")]
@@ -38,7 +37,7 @@ impl Installed {
             .context("registered service binary is missing")?;
         ensure!(
             executable == target,
-            "localshelld is registered at {}; run that binary's update command instead",
+            "a system service is registered at {}; use the maintenance wizard to migrate it",
             executable.display()
         );
         let config = config.canonicalize()?;
@@ -51,12 +50,8 @@ impl Installed {
     }
 }
 
-impl Lifecycle for Installed {
-    fn stop(&self) -> Result<()> {
-        stop()
-    }
-
-    fn start_and_verify(&self, expected: Option<&str>) -> Result<()> {
+impl Installed {
+    pub(crate) fn start_and_verify(&self, expected: Option<&str>) -> Result<()> {
         start()?;
         let config = localshelld::config::Config::load(&self.config)?;
         // The loopback health check must not follow redirects or use an HTTP proxy.
@@ -161,6 +156,7 @@ fn parse_windows_registration(command: &str) -> Result<(&str, &str)> {
         .context("unsupported service ImagePath; expected managed installation")?;
     let (binary, config) = value
         .split_once("\" service --config \"")
+        .or_else(|| value.split_once("\" --config \""))
         .context("unsupported service ImagePath; expected managed installation")?;
     ensure!(
         !binary.contains('"') && !config.contains('"'),
@@ -177,23 +173,6 @@ fn running() -> Result<bool> {
         .query_status()?
         .current_state
         == ServiceState::Running)
-}
-
-#[cfg(windows)]
-fn stop() -> Result<()> {
-    use windows_service::service::{ServiceAccess, ServiceState};
-    let service = open_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?
-        .context("service disappeared")?;
-    let state = service.query_status()?.current_state;
-    if state != ServiceState::Stopped && state != ServiceState::StopPending {
-        service.stop()?;
-    }
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while service.query_status()?.current_state != ServiceState::Stopped {
-        ensure!(Instant::now() < deadline, "service stop timed out");
-        thread::sleep(Duration::from_millis(100));
-    }
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -282,6 +261,7 @@ fn parse_systemd_registration(text: &str) -> Result<(String, String)> {
     ensure!(lines.len() == 1, "unsupported systemd service command");
     let (binary, config) = lines[0]
         .split_once(" serve --config ")
+        .or_else(|| lines[0].split_once(" --config "))
         .context("unsupported systemd service command")?;
     let decode = |value: &str| -> Result<String> {
         let value = value.replace("\\x20", " ");
@@ -309,25 +289,6 @@ fn running() -> Result<bool> {
     ])?
     .trim()
         == "active")
-}
-
-#[cfg(target_os = "linux")]
-fn stop() -> Result<()> {
-    systemctl(&["stop", "--no-block", "localshelld.service"])?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let state = systemctl(&[
-            "show",
-            "localshelld.service",
-            "--property=ActiveState",
-            "--value",
-        ])?;
-        if matches!(state.trim(), "inactive" | "failed") {
-            return Ok(());
-        }
-        ensure!(Instant::now() < deadline, "systemd stop timed out");
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -375,7 +336,8 @@ pub(crate) fn registration() -> Result<Option<Installed>> {
         .map(|arg| arg.as_string().context("non-string service argument"))
         .collect::<Result<_>>()?;
     ensure!(
-        args.len() == 4 && args[1] == "serve" && args[2] == "--config",
+        (args.len() == 4 && args[1] == "serve" && args[2] == "--config")
+            || (args.len() == 3 && args[1] == "--config"),
         "custom launchd arguments require manual updating"
     );
     let state = launch_state()?;
@@ -390,7 +352,7 @@ pub(crate) fn registration() -> Result<Option<Installed>> {
     );
     Ok(Some(Installed {
         executable: args[0].into(),
-        config: args[3].into(),
+        config: args[args.len() - 1].into(),
         was_running: active,
     }))
 }
@@ -399,15 +361,6 @@ pub(crate) fn registration() -> Result<Option<Installed>> {
 fn running() -> Result<bool> {
     Ok(launch_state()?
         .is_some_and(|text| text.lines().any(|line| line.trim() == "state = running")))
-}
-
-#[cfg(target_os = "macos")]
-fn stop() -> Result<()> {
-    if launch_state()?.is_some() {
-        checked(Command::new("/bin/launchctl").args(["bootout", LABEL]))?;
-    }
-    ensure!(launch_state()?.is_none(), "launchd job did not unload");
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -424,6 +377,18 @@ mod tests {
 
     #[test]
     fn parses_managed_service_commands_without_shell_evaluation() {
+        assert_eq!(parse_windows_registration(r#""C:\Program Files\trustd\trustd-system.exe" --config "C:\ProgramData\localshelld\config.toml""#).unwrap(),
+            (r"C:\Program Files\trustd\trustd-system.exe", r"C:\ProgramData\localshelld\config.toml"));
+        assert_eq!(
+            parse_systemd_registration(
+                "ExecStart=/opt/trustd/trustd-root --config /etc/localshelld/config.toml"
+            )
+            .unwrap(),
+            (
+                "/opt/trustd/trustd-root".into(),
+                "/etc/localshelld/config.toml".into()
+            )
+        );
         assert_eq!(parse_windows_registration(r#""C:\Program Files\localshelld\localshelld.exe" service --config "C:\ProgramData\localshelld\config.toml""#).unwrap(),
             (r"C:\Program Files\localshelld\localshelld.exe", r"C:\ProgramData\localshelld\config.toml"));
         assert!(parse_windows_registration("localshelld service").is_err());

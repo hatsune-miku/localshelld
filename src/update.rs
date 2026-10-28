@@ -4,7 +4,7 @@ pub(crate) mod service;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
@@ -12,17 +12,17 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Args;
-use fs2::FileExt;
 use reqwest::blocking::Client;
 use semver::Version;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
-#[cfg(windows)]
-use std::io::Write;
 
 const REPOSITORY: &str = "hatsune-miku/localshelld";
 const API: &str = "https://api.github.com/repos/hatsune-miku/localshelld";
 const MAX_DOWNLOAD: u64 = 128 * 1024 * 1024;
+// Four role-specific programs may jointly exceed the old single-executable
+// limit. Keep per-program/download limits and bound total expanded tar bytes.
+const MAX_EXPANDED_BUNDLE: u64 = 4 * MAX_DOWNLOAD + 1024 * 1024;
 const MAX_JSON: u64 = 4 * 1024 * 1024;
 
 /// Reuse the same managed-registration checks for an idempotent installation.
@@ -44,6 +44,9 @@ pub struct Options {
     /// Query releases without downloading, changing files, or stopping services.
     #[arg(long)]
     pub check: bool,
+    /// Download and verify the complete bundle without opening the maintenance wizard.
+    #[arg(long, conflicts_with = "check")]
+    pub download_only: bool,
     /// Include prereleases (stable versions are eligible too).
     #[arg(long, conflicts_with = "tag")]
     pub prerelease: bool,
@@ -71,15 +74,6 @@ struct Asset {
     digest: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Plan {
-    target: PathBuf,
-    version: String,
-    original_hash: String,
-    new_hash: String,
-    service: Option<service::Installed>,
-}
-
 fn version(tag: &str) -> Result<Version> {
     Version::parse(tag.strip_prefix('v').unwrap_or(tag)).context("invalid semantic release version")
 }
@@ -104,7 +98,7 @@ fn client() -> Result<Client> {
     // with the system-proxy feature, the current user's Windows/macOS settings.
     // Loopback daemon clients explicitly opt out with no_proxy().
     Ok(Client::builder()
-        .user_agent(concat!("localshelld/", env!("LOCALSHELLD_VERSION")))
+        .user_agent(concat!("trustd/", env!("LOCALSHELLD_VERSION")))
         .https_only(true)
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180))
@@ -189,26 +183,16 @@ fn asset_for(release: &Release, platform: &str) -> Result<(usize, String)> {
     } else {
         ".tar.gz"
     };
-    let archive = format!("localshelld-{platform}{extension}");
-    let raw = format!(
-        "localshelld-{platform}{}",
-        if platform.starts_with("windows-") {
-            ".exe"
-        } else {
-            ""
-        }
-    );
-    for name in [archive, raw] {
-        let matches: Vec<_> = release
-            .assets
-            .iter()
-            .enumerate()
-            .filter(|(_, asset)| asset.name == name)
-            .collect();
-        ensure!(matches.len() <= 1, "duplicate release asset {name}");
-        if let Some((index, _)) = matches.first() {
-            return Ok((*index, name));
-        }
+    let name = format!("trustd-{platform}{extension}");
+    let matches: Vec<_> = release
+        .assets
+        .iter()
+        .enumerate()
+        .filter(|(_, asset)| asset.name == name)
+        .collect();
+    ensure!(matches.len() <= 1, "duplicate release asset {name}");
+    if let Some((index, _)) = matches.first() {
+        return Ok((*index, name));
     }
     bail!("release {} has no asset for {platform}", release.tag_name)
 }
@@ -298,13 +282,23 @@ fn copy_bounded(mut reader: impl Read, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn unpack(archive: &Path, name: &str, platform: &str, destination: &Path) -> Result<()> {
-    let binary = if platform.starts_with("windows-") {
-        "localshelld.exe"
-    } else {
-        "localshelld"
-    };
-    let expected = format!("localshelld-{platform}/{binary}");
+fn unpack(archive: &Path, name: &str, platform: &str, directory: &Path) -> Result<()> {
+    ensure!(
+        name.ends_with(".zip") || name.ends_with(".tar.gz"),
+        "updates require a complete bundle archive"
+    );
+    for binary in super::bundle::names(platform.starts_with("windows-")) {
+        unpack_program(
+            archive,
+            name,
+            &format!("trustd-{platform}/{binary}"),
+            &directory.join(binary),
+        )?;
+    }
+    Ok(())
+}
+
+fn unpack_program(archive: &Path, name: &str, expected: &str, destination: &Path) -> Result<()> {
     let mut found = false;
     // Never extract arbitrary archive paths, links, permissions, or ancillary files.
     if name.ends_with(".zip") {
@@ -328,11 +322,11 @@ fn unpack(archive: &Path, name: &str, platform: &str, destination: &Path) -> Res
         }
     } else if name.ends_with(".tar.gz") {
         let decoder = flate2::read::GzDecoder::new(File::open(archive)?);
-        let mut tar = tar::Archive::new(decoder.take(MAX_DOWNLOAD + 1));
+        let mut tar = tar::Archive::new(decoder.take(MAX_EXPANDED_BUNDLE + 1));
         for (index, entry) in tar.entries()?.enumerate() {
             ensure!(index < 100, "too many archive entries");
             let mut entry = entry?;
-            if entry.path()?.as_ref() != Path::new(&expected) {
+            if entry.path()?.as_ref() != Path::new(expected) {
                 continue;
             }
             ensure!(
@@ -405,37 +399,14 @@ pub(super) fn checked(command: &mut Command) -> Result<String> {
     Ok(String::from_utf8(result.stdout)?)
 }
 
-fn probe(binary: &Path) -> Result<String> {
+fn probe(binary: &Path, role: &str) -> Result<String> {
     let text = checked(Command::new(binary).arg("--version"))?;
     let value = text
         .trim()
-        .strip_prefix("localshelld ")
+        .strip_prefix(&format!("{role} "))
         .context("unexpected binary version response")?;
     version(value)?;
     Ok(value.to_owned())
-}
-
-fn lock(target: &Path) -> Result<File> {
-    let path = target.with_file_name(format!(
-        "{}.update.lock",
-        target.file_name().unwrap().to_string_lossy()
-    ));
-    if let Ok(metadata) = fs::symlink_metadata(&path) {
-        ensure!(
-            metadata.is_file() && !metadata.file_type().is_symlink(),
-            "unsafe updater lock path"
-        );
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .with_context(|| format!("cannot open update lock {}", path.display()))?;
-    file.try_lock_exclusive()
-        .context("another update is in progress")?;
-    Ok(file)
 }
 
 pub fn run(options: Options) -> Result<()> {
@@ -443,6 +414,9 @@ pub fn run(options: Options) -> Result<()> {
         options.check || std::env::var_os("LOCALSHELLD_SESSION").is_none(),
         "updates run from an independent terminal; --check is also available inside a localshelld session"
     );
+    if !options.check && !options.download_only {
+        super::require_user()?;
+    }
     let client = client()?;
     let release = find_release(&client, &options)?;
     let wanted = version(&release.tag_name)?;
@@ -471,264 +445,59 @@ pub fn run(options: Options) -> Result<()> {
         println!("Update available; no files or services were changed.");
         return Ok(());
     }
-    let target = std::env::current_exe()?.canonicalize()?;
-    service::validate_target(&target)?;
-    let _lock = lock(&target)?;
-    let installed = service::discover(&target)?;
     let temp = tempfile::Builder::new()
-        .prefix(".localshelld-update-")
-        .tempdir_in(target.parent().unwrap())
-        .with_context(|| format!("cannot stage an update beside {}", target.display()))?;
+        .prefix("trustd-update-")
+        .tempdir()?;
     let archive = temp.path().join("download");
-    let new = temp
-        .path()
-        .join(if cfg!(windows) { "new.exe" } else { "new" });
+    let programs = temp.path().join("bundle");
+    fs::create_dir(&programs)?;
     let asset = &release.assets[index];
     let expected = expected_hash(&client, &release, asset)?;
     println!("Downloading and verifying {}...", asset.name);
     copy_bounded(asset_response(&client, asset)?, &archive)?;
     ensure!(
         hash_file(&archive)? == expected,
-        "download SHA-256 mismatch; service was not stopped"
+        "download SHA-256 mismatch; services were not changed"
     );
-    unpack(&archive, &asset_name, platform, &new)?;
-    service::validate_target(&new)?;
-    ensure!(
-        version(&probe(&new)?)? == wanted,
-        "downloaded binary does not report the selected release version; old RC builds lack embedded tags and cannot be installed automatically"
-    );
-    let plan = Plan {
-        target,
-        version: wanted.to_string(),
-        original_hash: hash_file(&std::env::current_exe()?)?,
-        new_hash: hash_file(&new)?,
-        service: installed,
-    };
-    fs::remove_file(archive)?;
-    println!(
-        "Verified. Updating will interrupt sessions and invalidate runtime tokens if the service is running."
-    );
-    #[cfg(windows)]
-    return launch_helper(temp, plan, _lock);
-    #[cfg(unix)]
-    {
-        // Keep both recovery binaries even when restart/rollback fails.
-        let stage = temp.keep();
-        apply(&plan, &stage)?;
-        println!(
-            "Updated to {}. Previous binary: {}",
-            plan.version,
-            stage.join("previous").display()
+    unpack(&archive, &asset_name, platform, &programs)?;
+    for name in super::bundle::names(cfg!(windows)) {
+        let path = programs.join(&name);
+        service::validate_target(&path)?;
+        ensure!(
+            version(&probe(&path, name.trim_end_matches(".exe"))?)? == wanted,
+            "bundle programs do not report one consistent release version"
         );
-        Ok(())
     }
-}
-
-trait Lifecycle {
-    fn stop(&self) -> Result<()>;
-    fn start_and_verify(&self, version: Option<&str>) -> Result<()>;
-}
-
-fn replace(source: &Path, target: &Path) -> Result<()> {
-    #[cfg(unix)]
-    fs::rename(source, target)?; // Both are on the target filesystem: atomic name replacement.
-    #[cfg(windows)]
-    {
-        // Windows rename replaces an existing regular file after its image
-        // mappings close. Never delete the destination as a fallback.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match fs::rename(source, target) {
-                Ok(()) => break,
-                Err(error)
-                    if matches!(error.raw_os_error(), Some(5 | 32))
-                        && Instant::now() < deadline =>
-                {
-                    thread::sleep(Duration::from_millis(100))
-                }
-                Err(error) => return Err(error).context(
-                    "binary is in use or replacement failed; stop foreground localshelld processes",
-                ),
-            }
-        }
-    }
-    sync_directory(target.parent().unwrap())?;
-    Ok(())
-}
-
-fn sync_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    File::open(path)?.sync_all()?;
-    #[cfg(windows)]
-    let _ = path;
-    Ok(())
-}
-
-fn transaction(
-    target: &Path,
-    stage: &Path,
-    lifecycle: Option<&dyn Lifecycle>,
-    expected: &str,
-) -> Result<()> {
-    let new = stage.join(if cfg!(windows) { "new.exe" } else { "new" });
-    let backup = stage.join("previous");
-    // create_new avoids following a pre-existing link or overwriting a recovery copy.
-    copy_bounded(File::open(target)?, &backup)?;
-    fs::set_permissions(&backup, fs::metadata(target)?.permissions())?;
-    sync_directory(stage)?;
-    if let Some(service) = lifecycle
-        && let Err(error) = service.stop()
-    {
-        let restored = service.start_and_verify(None);
-        bail!("service stop failed: {error:#}; original-service recovery: {restored:?}");
-    }
-    let result = replace(&new, target).and_then(|()| {
-        if let Some(service) = lifecycle {
-            service.start_and_verify(Some(expected))
-        } else {
-            Ok(())
-        }
-    });
-    if let Err(error) = result {
-        // A failed rename can leave the old file completely untouched (e.g. a
-        // Windows foreground process still maps it). Do not try to overwrite
-        // that intact file again just to roll back a change that never happened.
-        if hash_file(target).ok() == Some(hash_file(&backup)?) {
-            if let Some(service) = lifecycle {
-                service
-                    .start_and_verify(None)
-                    .context("binary unchanged, but original service did not recover")?;
-            }
-            bail!("update failed; original binary was preserved: {error:#}");
-        }
-        // Never replace a still-running failed new service or restart over it.
-        if let Some(service) = lifecycle {
-            service.stop().context(format!(
-                "update failed ({error:#}); unable to stop for rollback; backup: {}",
-                backup.display()
-            ))?;
-        }
-        let rollback = stage.join("rollback");
-        copy_bounded(File::open(&backup)?, &rollback)?;
-        fs::set_permissions(&rollback, fs::metadata(&backup)?.permissions())?;
-        replace(&rollback, target).context(format!(
-            "update failed ({error:#}); rollback failed; backup: {}",
-            backup.display()
-        ))?;
-        if let Some(service) = lifecycle {
-            service
-                .start_and_verify(None)
-                .context("old binary restored, but original service did not recover")?;
-        }
-        bail!("update failed and the previous binary was restored: {error:#}");
-    }
-    Ok(())
-}
-
-fn apply(plan: &Plan, stage: &Path) -> Result<()> {
-    service::validate_target(&plan.target)?;
-    ensure!(
-        hash_file(&plan.target)? == plan.original_hash,
-        "installed binary changed since preparation"
+    let manifest = super::bundle::Manifest::read(&programs)?;
+    manifest.verify(&programs)?;
+    fs::remove_file(archive)?;
+    let stage = temp.keep();
+    let executable = stage
+        .join("bundle")
+        .join(super::bundle::filename(super::bundle::MAINTENANCE));
+    println!(
+        "Verified bundle: {}",
+        executable.parent().unwrap().display()
     );
-    ensure!(
-        hash_file(&stage.join(if cfg!(windows) { "new.exe" } else { "new" }))? == plan.new_hash,
-        "staged binary changed since verification"
-    );
-    let current_service = service::discover(&plan.target)?;
-    ensure!(
-        current_service == plan.service,
-        "service registration/state changed since preparation; retry update"
-    );
-    let active = plan.service.as_ref().filter(|service| service.was_running);
-    transaction(
-        &plan.target,
-        stage,
-        active.map(|service| service as &dyn Lifecycle),
-        &plan.version,
-    )
-}
-
-#[cfg(windows)]
-fn launch_helper(temp: tempfile::TempDir, plan: Plan, update_lock: File) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    let helper = temp.path().join("helper.exe");
-    fs::copy(std::env::current_exe()?, &helper)?;
-    service::validate_target(&helper)?;
-    let plan_path = temp.path().join("plan.json");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&plan_path)?;
-    file.write_all(&serde_json::to_vec(&plan)?)?;
-    file.sync_all()?;
-    let parent = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(temp.path().join("parent.lock"))?;
-    parent.lock_exclusive()?;
-    let log_path = temp.path().join("update.log");
+    if options.download_only {
+        println!("No services were changed. Run this bundle's trustd maintenance to apply it.");
+        return Ok(());
+    }
     let log = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&log_path)?;
-    Command::new(&helper)
-        .arg("apply-update")
-        .arg(&plan_path)
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW: no visible helper console.
+        .open(stage.join("maintenance.log"))?;
+    let mut command = localshelld::process::background_command(&executable);
+    command
+        .arg("maintenance")
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
-        .spawn()?;
-    let stage = temp.keep();
+        .spawn()
+        .context("verified bundle is ready, but the maintenance wizard could not start")?;
     println!(
-        "Update handed to the local helper. Completion/error log: {}\nRecovery directory: {}",
-        log_path.display(),
-        stage.display()
-    );
-    // Keep locks until process termination so the helper never stops the service
-    // or replaces the executable while this CLI is still executing.
-    std::hint::black_box((&parent, &update_lock));
-    std::process::exit(0);
-}
-
-#[cfg(windows)]
-pub fn apply_helper(plan_path: &Path) -> Result<()> {
-    let executable = std::env::current_exe()?.canonicalize()?;
-    let stage = executable.parent().context("missing helper directory")?;
-    ensure!(
-        executable
-            .file_name()
-            .is_some_and(|name| name == "helper.exe")
-            && plan_path.canonicalize()? == stage.join("plan.json"),
-        "helper must run from its own prepared update directory"
-    );
-    service::validate_target(&executable)?;
-    let parent = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(stage.join("parent.lock"))?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while parent.try_lock_exclusive().is_err() {
-        ensure!(
-            Instant::now() < deadline,
-            "parent CLI did not exit; no changes made"
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-    let plan: Plan = serde_json::from_slice(&read_bounded(File::open(plan_path)?, 64 * 1024)?)?;
-    ensure!(
-        plan.target.parent() == stage.parent(),
-        "update target is not beside staging directory"
-    );
-    let _lock = lock(&plan.target)?;
-    println!("Applying verified version {}...", plan.version);
-    apply(&plan, stage)?;
-    println!(
-        "SUCCESS: updated to {}. Previous binary: {}",
-        plan.version,
-        stage.join("previous").display()
+        "Maintenance wizard launched. Installation is not complete until the wizard succeeds. Log: {}",
+        stage.join("maintenance.log").display()
     );
     Ok(())
 }

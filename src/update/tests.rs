@@ -1,5 +1,5 @@
 use super::*;
-use std::{cell::RefCell, io::Write};
+use std::io::Write;
 
 #[test]
 fn updater_keeps_system_proxy_support_with_default_features_disabled() {
@@ -52,9 +52,9 @@ fn selects_by_semver_not_api_order_or_promoted_rc() {
 fn chooses_only_the_requested_platform_asset() {
     let mut release = release("v1.0.0", false, false);
     for name in [
-        "localshelld-windows-x86_64.exe",
-        "localshelld-windows-x86_64.zip",
-        "localshelld-linux-x86_64.tar.gz",
+        "trustd-windows-x86_64.exe",
+        "trustd-windows-x86_64.zip",
+        "trustd-linux-x86_64.tar.gz",
     ] {
         release.assets.push(Asset {
             name: name.into(),
@@ -64,7 +64,7 @@ fn chooses_only_the_requested_platform_asset() {
     }
     assert_eq!(
         asset_for(&release, "windows-x86_64").unwrap().1,
-        "localshelld-windows-x86_64.zip"
+        "trustd-windows-x86_64.zip"
     );
     assert!(asset_for(&release, "macos-aarch64").is_err());
 }
@@ -116,14 +116,60 @@ fn zip_extracts_only_exact_binary_not_path_traversal() {
     archive.start_file("../outside", options).unwrap();
     archive.write_all(b"bad").unwrap();
     archive
-        .start_file("localshelld-windows-x86_64/localshelld.exe", options)
+        .start_file("trustd-windows-x86_64/trustd.exe", options)
         .unwrap();
     archive.write_all(b"binary").unwrap();
+    for binary in ["trustd-user.exe", "trustd-system.exe", "trustd-stdio.exe"] {
+        archive
+            .start_file(format!("trustd-windows-x86_64/{binary}"), options)
+            .unwrap();
+        archive.write_all(b"role").unwrap();
+    }
     archive.finish().unwrap();
     let destination = temp.path().join("new");
+    fs::create_dir(&destination).unwrap();
     unpack(&path, "asset.zip", "windows-x86_64", &destination).unwrap();
-    assert_eq!(fs::read(destination).unwrap(), b"binary");
+    assert_eq!(fs::read(destination.join("trustd.exe")).unwrap(), b"binary");
     assert!(!temp.path().parent().unwrap().join("outside").exists());
+}
+
+#[test]
+fn tar_expansion_limit_allows_multiple_programs_larger_than_one_program() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("bundle.tar.gz");
+    let gzip =
+        flate2::write::GzEncoder::new(File::create(&path).unwrap(), flate2::Compression::fast());
+    let mut archive = tar::Builder::new(gzip);
+    let mut header = tar::Header::new_gnu();
+    header.set_size(MAX_DOWNLOAD);
+    header.set_mode(0o755);
+    header.set_cksum();
+    archive
+        .append_data(
+            &mut header,
+            "trustd-linux-x86_64/trustd-root",
+            io::repeat(0).take(MAX_DOWNLOAD),
+        )
+        .unwrap();
+    header.set_size(7);
+    header.set_cksum();
+    archive
+        .append_data(
+            &mut header,
+            "trustd-linux-x86_64/trustd-stdio",
+            &b"program"[..],
+        )
+        .unwrap();
+    archive.into_inner().unwrap().finish().unwrap();
+    let destination = temp.path().join("stdio");
+    unpack_program(
+        &path,
+        "bundle.tar.gz",
+        "trustd-linux-x86_64/trustd-stdio",
+        &destination,
+    )
+    .unwrap();
+    assert_eq!(fs::read(destination).unwrap(), b"program");
 }
 
 #[test]
@@ -137,11 +183,7 @@ fn tar_rejects_symbolic_link_binary() {
     header.set_entry_type(tar::EntryType::Symlink);
     header.set_size(0);
     archive
-        .append_link(
-            &mut header,
-            "localshelld-linux-x86_64/localshelld",
-            "/etc/passwd",
-        )
+        .append_link(&mut header, "trustd-linux-x86_64/trustd", "/etc/passwd")
         .unwrap();
     archive.into_inner().unwrap().finish().unwrap();
     assert!(
@@ -155,157 +197,47 @@ fn tar_rejects_symbolic_link_binary() {
     );
 }
 
-struct MockService {
-    calls: RefCell<Vec<String>>,
-    fail_new: bool,
-    fail_stop: bool,
-}
-
-impl Lifecycle for MockService {
-    fn stop(&self) -> Result<()> {
-        self.calls.borrow_mut().push("stop".into());
-        ensure!(!self.fail_stop, "injected stop failure");
-        Ok(())
+#[test]
+fn incomplete_duplicate_and_raw_release_bundles_are_rejected() {
+    for duplicate in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("download");
+        let mut archive = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        archive
+            .start_file("trustd-windows-x86_64/trustd.exe", options)
+            .unwrap();
+        archive.write_all(b"program").unwrap();
+        if duplicate {
+            // ZipWriter rejects duplicate paths too, so use tar for the duplicate fixture.
+            archive.finish().unwrap();
+            let gzip = flate2::write::GzEncoder::new(
+                File::create(&path).unwrap(),
+                flate2::Compression::default(),
+            );
+            let mut tar = tar::Builder::new(gzip);
+            for _ in 0..2 {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(7);
+                header.set_mode(0o755);
+                header.set_cksum();
+                tar.append_data(&mut header, "trustd-linux-x86_64/trustd", &b"program"[..])
+                    .unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+        } else {
+            archive.finish().unwrap();
+        }
+        let target = temp.path().join("bundle");
+        fs::create_dir(&target).unwrap();
+        let (name, platform) = if duplicate {
+            ("asset.tar.gz", "linux-x86_64")
+        } else {
+            ("asset.zip", "windows-x86_64")
+        };
+        assert!(unpack(&path, name, platform, &target).is_err());
+        assert!(unpack(&path, "single.exe", "windows-x86_64", &target).is_err());
     }
-    fn start_and_verify(&self, version: Option<&str>) -> Result<()> {
-        self.calls.borrow_mut().push(format!("start:{version:?}"));
-        ensure!(
-            !self.fail_new || version.is_none(),
-            "injected new-version health failure"
-        );
-        Ok(())
-    }
-}
-
-fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let temp = tempfile::tempdir().unwrap();
-    let target = temp.path().join("localshelld");
-    let stage = temp.path().join("stage");
-    fs::create_dir(&stage).unwrap();
-    fs::write(&target, b"old binary").unwrap();
-    fs::write(
-        stage.join(if cfg!(windows) { "new.exe" } else { "new" }),
-        b"new binary",
-    )
-    .unwrap();
-    (temp, target, stage)
-}
-
-#[test]
-fn successful_transaction_preserves_backup_and_restarts_once() {
-    let (_temp, target, stage) = fixture();
-    let service = MockService {
-        calls: RefCell::default(),
-        fail_new: false,
-        fail_stop: false,
-    };
-    transaction(&target, &stage, Some(&service), "1.0.0").unwrap();
-    assert_eq!(fs::read(target).unwrap(), b"new binary");
-    assert_eq!(fs::read(stage.join("previous")).unwrap(), b"old binary");
-    assert_eq!(*service.calls.borrow(), ["stop", "start:Some(\"1.0.0\")"]);
-}
-
-#[test]
-fn failed_health_check_restores_original_and_restarts_it() {
-    let (_temp, target, stage) = fixture();
-    let service = MockService {
-        calls: RefCell::default(),
-        fail_new: true,
-        fail_stop: false,
-    };
-    assert!(transaction(&target, &stage, Some(&service), "1.0.0").is_err());
-    assert_eq!(fs::read(target).unwrap(), b"old binary");
-    assert_eq!(
-        *service.calls.borrow(),
-        ["stop", "start:Some(\"1.0.0\")", "stop", "start:None"]
-    );
-}
-
-#[test]
-fn stop_failure_never_changes_binary() {
-    let (_temp, target, stage) = fixture();
-    let service = MockService {
-        calls: RefCell::default(),
-        fail_new: false,
-        fail_stop: true,
-    };
-    assert!(transaction(&target, &stage, Some(&service), "1.0.0").is_err());
-    assert_eq!(fs::read(target).unwrap(), b"old binary");
-    assert_eq!(*service.calls.borrow(), ["stop", "start:None"]);
-}
-
-#[test]
-fn inactive_or_uninstalled_service_is_not_started() {
-    let (_temp, target, stage) = fixture();
-    transaction(&target, &stage, None, "1.0.0").unwrap();
-    assert_eq!(fs::read(target).unwrap(), b"new binary");
-}
-
-#[cfg(unix)]
-#[test]
-fn atomic_replacement_keeps_old_open_file_readable() {
-    let (_temp, target, stage) = fixture();
-    let mut old = File::open(&target).unwrap();
-    transaction(&target, &stage, None, "1.0.0").unwrap();
-    let mut bytes = Vec::new();
-    old.read_to_end(&mut bytes).unwrap();
-    assert_eq!(bytes, b"old binary");
-    assert_eq!(fs::read(target).unwrap(), b"new binary");
-}
-
-#[test]
-fn update_lock_excludes_concurrent_updates() {
-    let (_temp, target, _stage) = fixture();
-    let first = lock(&target).unwrap();
-    assert!(lock(&target).is_err());
-    drop(first);
-    assert!(lock(&target).is_ok());
-}
-
-#[test]
-fn missing_staged_binary_leaves_original_and_recovers_service() {
-    let (_temp, target, stage) = fixture();
-    fs::remove_file(stage.join(if cfg!(windows) { "new.exe" } else { "new" })).unwrap();
-    let service = MockService {
-        calls: RefCell::default(),
-        fail_new: false,
-        fail_stop: false,
-    };
-    assert!(transaction(&target, &stage, Some(&service), "1.0.0").is_err());
-    assert_eq!(fs::read(target).unwrap(), b"old binary");
-    assert_eq!(*service.calls.borrow(), ["stop", "start:None"]);
-}
-
-#[cfg(windows)]
-#[test]
-fn accepts_system_binary_without_changing_it() {
-    let root = std::env::var_os("SystemRoot").unwrap();
-    let binary = Path::new(&root)
-        .join("System32/cmd.exe")
-        .canonicalize()
-        .unwrap();
-    service::validate_target(&binary).unwrap();
-}
-
-#[test]
-fn updates_in_user_writable_directory_without_changing_directory_permissions() {
-    let (temp, target, stage) = fixture();
-    let permissions = fs::metadata(temp.path()).unwrap().permissions();
-    service::validate_target(&target.canonicalize().unwrap()).unwrap();
-    service::validate_target(
-        &stage
-            .join(if cfg!(windows) { "new.exe" } else { "new" })
-            .canonicalize()
-            .unwrap(),
-    )
-    .unwrap();
-    transaction(&target, &stage, None, "1.0.0").unwrap();
-    assert_eq!(fs::read(&target).unwrap(), b"new binary");
-    assert_eq!(fs::read(stage.join("previous")).unwrap(), b"old binary");
-    assert_eq!(
-        fs::metadata(temp.path()).unwrap().permissions(),
-        permissions
-    );
 }
 
 #[test]
@@ -313,45 +245,5 @@ fn update_target_requires_existing_absolute_regular_file() {
     let temp = tempfile::tempdir().unwrap();
     assert!(service::validate_target(Path::new("relative.exe")).is_err());
     assert!(service::validate_target(temp.path()).is_err());
-    let error = service::validate_target(&temp.path().join("missing.exe")).unwrap_err();
-    assert!(error.to_string().contains("cannot inspect update target"));
-    assert!(error.downcast_ref::<io::Error>().is_some());
-}
-
-#[cfg(unix)]
-#[test]
-fn writable_unix_modes_are_not_an_update_policy() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let (temp, target, _stage) = fixture();
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o777)).unwrap();
-    fs::set_permissions(&target, fs::Permissions::from_mode(0o777)).unwrap();
-    let before = fs::metadata(&target).unwrap();
-    service::validate_target(&target.canonicalize().unwrap()).unwrap();
-    let after = fs::metadata(&target).unwrap();
-    assert_eq!(before.uid(), after.uid());
-    assert_eq!(before.gid(), after.gid());
-    assert_eq!(before.mode(), after.mode());
-    assert_eq!(fs::metadata(temp.path()).unwrap().mode() & 0o777, 0o777);
-}
-
-#[cfg(windows)]
-#[test]
-fn windows_os_file_lock_preserves_original_binary_and_reports_failure() {
-    use std::os::windows::fs::OpenOptionsExt;
-    let (_temp, target, stage) = fixture();
-    // Permit reading the backup, but let Windows reject rename/delete while open.
-    let _held = OpenOptions::new()
-        .read(true)
-        .share_mode(0x1 | 0x2)
-        .open(&target)
-        .unwrap();
-    let service = MockService {
-        calls: RefCell::default(),
-        fail_new: false,
-        fail_stop: false,
-    };
-    let error = transaction(&target, &stage, Some(&service), "1.0.0").unwrap_err();
-    assert!(error.to_string().contains("original binary was preserved"));
-    assert_eq!(fs::read(&target).unwrap(), b"old binary");
-    assert_eq!(*service.calls.borrow(), ["stop", "start:None"]);
+    assert!(service::validate_target(&temp.path().join("missing.exe")).is_err());
 }

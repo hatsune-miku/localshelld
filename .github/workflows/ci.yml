@@ -67,21 +67,23 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           python3 -m unittest discover -s scripts -p 'test_*.py' -v
-          python3 scripts/test-dual-daemon.py target/release/localshelld
+          python3 scripts/test-dual-daemon.py target/release/trustd
       - name: Verify embedded version
         if: env.LOCALSHELLD_RELEASE_TAG != ''
         shell: bash
         run: |
-          binary=target/release/localshelld
-          if [[ "$RUNNER_OS" == Windows ]]; then binary="$binary.exe"; fi
-          actual="$("$binary" --version | tr -d '\r')"
-          test "$actual" = "localshelld ${LOCALSHELLD_RELEASE_TAG#v}"
-          printf '%s\n' "$actual" > target/release/release-version.txt
+          bash scripts/verify-release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: localshelld-${{ matrix.platform }}
+          name: trustd-${{ matrix.platform }}
           path: |
-            target/release/localshelld
-            target/release/localshelld.exe
+            target/release/trustd
+            target/release/trustd.exe
+            target/release/trustd-user
+            target/release/trustd-user.exe
+            target/release/trustd-stdio
+            target/release/trustd-stdio.exe
+            target/release/trustd-system.exe
+            target/release/trustd-root
             target/release/release-version.txt
           if-no-files-found: error

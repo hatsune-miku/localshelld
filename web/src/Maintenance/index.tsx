@@ -122,7 +122,7 @@ export function Maintenance({ token }: { token: string }) {
       <main className="maintenance">
         <header className="maintenance-header">
           <div className="maintenance-brand">
-            <h1 className="maintenance-name">localshelld</h1>
+            <h1 className="maintenance-name">trustd</h1>
             <span className="maintenance-caption">安装与维护</span>
           </div>
           {info && (
@@ -161,7 +161,7 @@ export function Maintenance({ token }: { token: string }) {
             ) : !token ? (
               <>
                 <h2 className="section-title">重新打开向导</h2>
-                <p className="description">此链接已失效。请重新启动 localshelld 安装与维护。</p>
+                <p className="description">此链接已失效。请重新启动 trustd 安装与维护。</p>
               </>
             ) : !info ? (
               <>
@@ -170,7 +170,7 @@ export function Maintenance({ token }: { token: string }) {
               </>
             ) : step === 0 ? (
               <>
-                <h2 className="section-title">{info.registered ? '已检测到安装' : '安装 localshelld'}</h2>
+                <h2 className="section-title">{info.registered ? '已检测到安装' : '安装 trustd'}</h2>
                 <dl className="maintenance-checks">
                   <div className="maintenance-check">
                     <dt className="maintenance-check-label">系统服务</dt>

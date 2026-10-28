@@ -122,7 +122,7 @@ export function SyncSettings({ session, onChanged }: { session: string; onChange
               type="url"
               value={url}
               onChange={(event) => setUrl(event.currentTarget.value)}
-              placeholder="https://localshelld.example.com"
+              placeholder="https://trustd.example.com"
               autoComplete="off"
               required
             />

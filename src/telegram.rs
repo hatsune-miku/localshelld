@@ -146,7 +146,7 @@ impl Backend {
     async fn create(&self, prompt: Prompt) -> Result<(), ApiError> {
         let device = std::env::var("COMPUTERNAME")
             .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "localshelld device".into());
+            .unwrap_or_else(|_| "trustd device".into());
         self.0
             .telegram_cloud_request(
                 "telegram/request",

@@ -38,7 +38,7 @@ export function Secrets({ session }: { session: string }) {
       const url = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }))
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = `localshelld-credentials-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.download = `trustd-credentials-${new Date().toISOString().slice(0, 10)}.json`
       anchor.click()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     })
@@ -58,7 +58,7 @@ export function Secrets({ session }: { session: string }) {
         Array.isArray(data.credentials) ||
         typeof data.credentials !== 'object'
       )
-        throw new Error('不是受支持的 localshelld 凭据文件。')
+        throw new Error('不是受支持的 trustd 凭据文件。')
       if (
         !window.confirm(
           `用文件中的 ${Object.keys(data.credentials).length} 条凭据替换全部现有凭据？已连接服务时，也会替换云端凭据。`

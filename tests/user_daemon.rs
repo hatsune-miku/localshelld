@@ -16,8 +16,12 @@ impl Drop for Daemon {
     }
 }
 
-fn cli() -> Command {
-    let command = Command::new(env!("CARGO_BIN_EXE_localshelld"));
+fn cli(user: bool) -> Command {
+    let command = Command::new(if user {
+        env!("CARGO_BIN_EXE_trustd-user")
+    } else {
+        env!("CARGO_BIN_EXE_trustd")
+    });
     #[cfg(windows)]
     let command = {
         use std::os::windows::process::CommandExt;
@@ -42,7 +46,7 @@ async fn windowless_user_daemon_keeps_the_native_desktop_event_loop_and_http_ali
 async fn verify_user_daemon(headless: bool) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("user/config.toml");
-    let mut init = cli()
+    let mut init = cli(false)
         .args(["init", "--user", "--password-stdin", "--config"])
         .arg(&path)
         .stdin(Stdio::piped())
@@ -61,8 +65,8 @@ async fn verify_user_daemon(headless: bool) {
         // an unprivileged server. Unix CI separately tests both real identities.
         let error = String::from_utf8_lossy(&initialized.stderr);
         assert!(error.contains("non-elevated"), "user init failed: {error}");
-        let serve = cli()
-            .args(["serve", "--user", "--config"])
+        let serve = cli(true)
+            .args(["--config"])
             .arg(&path)
             .args(headless.then_some("--headless"))
             .output()
@@ -79,8 +83,8 @@ async fn verify_user_daemon(headless: bool) {
     config.save(&path).unwrap();
     drop(reservation);
     let mut daemon = Daemon(
-        cli()
-            .args(["serve", "--user", "--config"])
+        cli(true)
+            .args(["--config"])
             .arg(&path)
             .args(headless.then_some("--headless"))
             .stdout(Stdio::null())

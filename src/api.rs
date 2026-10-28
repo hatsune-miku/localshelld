@@ -17,6 +17,7 @@ mod llms;
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
     SecretsList,
+    SecretsGet,
     EnterInteractive,
     EnterPreauthorized,
     Run,
@@ -28,6 +29,7 @@ impl Operation {
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "secrets_list" => Self::SecretsList,
+            "secrets_get" => Self::SecretsGet,
             "enter_interactive" | "localshelld_enter_interactive" => Self::EnterInteractive,
             "enter_preauthorized" | "localshelld_enter_with_preauthorized_credential" => {
                 Self::EnterPreauthorized
@@ -41,6 +43,7 @@ impl Operation {
     fn path(self) -> &'static str {
         match self {
             Self::SecretsList => "/v1/secrets/keys",
+            Self::SecretsGet => "/v1/secrets/get",
             Self::EnterInteractive => "/v1/sessions/enter/interactive",
             Self::EnterPreauthorized => "/v1/sessions/enter/preauthorized",
             Self::Run => "/v1/commands/run",
@@ -51,6 +54,7 @@ impl Operation {
     fn fields(self) -> &'static [&'static str] {
         match self {
             Self::SecretsList => &[],
+            Self::SecretsGet => &["handle", "key"],
             Self::EnterInteractive => &[
                 "agent_name",
                 "request_reason",
@@ -80,6 +84,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/v1/capabilities", get(capabilities))
         .route(Operation::SecretsList.path(), get(secrets_list));
     for operation in [
+        Operation::SecretsGet,
         Operation::EnterInteractive,
         Operation::EnterPreauthorized,
         Operation::Run,
@@ -115,7 +120,7 @@ fn operation_definitions() -> Value {
 
 async fn capabilities(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
-        "protocol":1,"service":"localshelld","version":crate::VERSION,"commit":crate::COMMIT,
+        "protocol":1,"service":"localshelld","product":"trustd","version":crate::VERSION,"commit":crate::COMMIT,
         "daemon":state.mode,"platform":std::env::consts::OS,
         "operations":operation_definitions(),
         "cancellation":{"method":"POST","path":Operation::Destroy.path(),"scope":"session","disconnect_cancels":false},
@@ -148,6 +153,11 @@ pub(crate) async fn execute(
     }
     match operation {
         Operation::SecretsList => Ok(json!({"keys":state.secret_keys().await?})),
+        Operation::SecretsGet => {
+            let handle = string_arg(&arguments, "handle")?;
+            let key = string_arg(&arguments, "key")?;
+            Ok(json!({"key":key,"value":state.secret_value(handle, key).await?}))
+        }
         Operation::EnterInteractive => {
             confirmation(&arguments)?;
             state

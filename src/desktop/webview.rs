@@ -147,7 +147,7 @@ fn create_window(
     reply: oneshot::Sender<Decision>,
 ) -> Result<ConsentWindow> {
     let window = WindowBuilder::new()
-        .with_title("本机命令授权 — localshelld")
+        .with_title("本机命令授权 — trustd")
         .with_inner_size(LogicalSize::new(
             640.0,
             if prompt.secret_keys.is_empty() {
@@ -157,6 +157,7 @@ fn create_window(
             },
         ))
         .with_min_inner_size(LogicalSize::new(420.0, 500.0))
+        .with_always_on_top(true)
         .with_visible(false)
         .build(target)
         .context("native consent window creation failed")?;

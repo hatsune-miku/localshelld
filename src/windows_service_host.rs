@@ -57,7 +57,7 @@ fn run_service() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let result = runtime.block_on(super::serve_until(path, true, async move {
+    let result = runtime.block_on(crate::daemon::serve(path, false, None, async move {
         let _ = shutdown_rx.await;
     }));
 

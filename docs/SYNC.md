@@ -192,7 +192,7 @@ localshelld 默认使用本机离线凭据库，也可以连接自托管同步�
 
 不包含服务器地址、JWT、执行 token、WebAuthn 私钥或 revision。导入前完整校验格式、版本和所有 key/value；导入会替换全部凭据。连接云端时，导入也通过 CAS 写入云端，不只修改本机缓存。不声称兼容 TOTP authenticator 的导出格式。
 
-本机导入导出只接受管理页面的登录 session，MCP 执行 token 不能调用。公开 MCP 仍然只有 `secrets_list`，返回 key 列表。
+本机导入导出只接受管理页面的登录 session，MCP 执行 token 不能调用。`secrets_list` 返回 key 列表；显式 `secrets_get` 及 HTTP `POST /v1/secrets/get` 只返回存活会话已授权 key 的明文快照，不提供整库导出或未授权 key 读取。
 
 ## 部署参考实现
 

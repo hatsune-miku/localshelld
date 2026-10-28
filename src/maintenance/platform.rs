@@ -131,7 +131,7 @@ pub(super) fn shortcut(executable: &Path) -> Result<()> {
         let encoded = base64::engine::general_purpose::STANDARD
             .encode(executable.to_string_lossy().as_bytes());
         let script = format!(
-            r#"$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}')); $link=Join-Path ([Environment]::GetFolderPath('Programs')) 'localshelld.lnk'; $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($link); $shortcut.TargetPath=$target; $shortcut.Arguments='maintenance'; $shortcut.WorkingDirectory=Split-Path -Parent $target; $shortcut.Save()"#
+            r#"$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}')); $link=Join-Path ([Environment]::GetFolderPath('Programs')) 'trustd.lnk'; $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($link); $shortcut.TargetPath=$target; $shortcut.Arguments='maintenance'; $shortcut.WorkingDirectory=Split-Path -Parent $target; $shortcut.Save()"#
         );
         super::super::checked(
             super::super::windows_command("WindowsPowerShell/v1.0/powershell.exe")?.args([
@@ -146,12 +146,10 @@ pub(super) fn shortcut(executable: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         let base = directories::BaseDirs::new().context("missing user home")?;
-        let app = base
-            .home_dir()
-            .join("Applications/localshelld.app/Contents");
+        let app = base.home_dir().join("Applications/trustd.app/Contents");
         let directory = app.join("MacOS");
         fs::create_dir_all(&directory)?;
-        let launcher = directory.join("localshelld-maintenance");
+        let launcher = directory.join("trustd-maintenance");
         fs::write(
             &launcher,
             format!(
@@ -162,7 +160,7 @@ pub(super) fn shortcut(executable: &Path) -> Result<()> {
         fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))?;
         fs::write(
             app.join("Info.plist"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.localshelld.maintenance</string><key>CFBundleName</key><string>localshelld</string><key>CFBundleExecutable</key><string>localshelld-maintenance</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/></dict></plist>"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.localshelld.maintenance</string><key>CFBundleName</key><string>trustd</string><key>CFBundleExecutable</key><string>trustd-maintenance</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/></dict></plist>"#,
         )?;
     }
     #[cfg(target_os = "linux")]
@@ -178,7 +176,7 @@ pub(super) fn shortcut(executable: &Path) -> Result<()> {
         fs::write(
             directory.join("dev.localshelld.maintenance.desktop"),
             format!(
-                "[Desktop Entry]\nType=Application\nName=localshelld\nExec=\"{executable}\" maintenance\nTerminal=false\nCategories=System;Settings;\n"
+                "[Desktop Entry]\nType=Application\nName=trustd\nExec=\"{executable}\" maintenance\nTerminal=false\nCategories=System;Settings;\n"
             ),
         )?;
     }

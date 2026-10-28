@@ -18,6 +18,15 @@ fn escape_xml(value: &str) -> String {
 }
 
 fn plist(executable: &str, config: &str) -> String {
+    let legacy = if std::path::Path::new(executable)
+        .file_name()
+        .and_then(|s| s.to_str())
+        == Some("trustd-root")
+    {
+        ""
+    } else {
+        "<string>serve</string>"
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,7 +34,7 @@ fn plist(executable: &str, config: &str) -> String {
 <dict>
     <key>Label</key><string>{LABEL}</string>
     <key>ProgramArguments</key>
-    <array><string>{}</string><string>serve</string><string>--config</string><string>{}</string></array>
+    <array><string>{}</string>{legacy}<string>--config</string><string>{}</string></array>
     <key>UserName</key><string>root</string>
     <key>WorkingDirectory</key><string>/</string>
     <key>EnvironmentVariables</key>
@@ -44,7 +53,7 @@ fn plist(executable: &str, config: &str) -> String {
 #[cfg(target_os = "macos")]
 pub fn install(executable: &Path, config: &Path) -> Result<()> {
     if Path::new(PLIST_PATH).exists() {
-        bail!("{PLIST_PATH} already exists; run `localshelld uninstall` before reinstalling");
+        bail!("{PLIST_PATH} already exists; use `trustd maintenance` to repair or migrate it");
     }
     let executable = executable
         .to_str()
@@ -91,6 +100,9 @@ mod tests {
 
     #[test]
     fn launchd_arguments_are_separate_and_xml_escaped() {
+        let dedicated = plist("/Library/trustd/trustd-root", "/etc/config.toml");
+        assert!(!dedicated.contains("<string>serve</string>"));
+        assert!(dedicated.contains("<string>--config</string>"));
         let xml = plist(
             "/Applications/localshelld test/bin&tool",
             "/Library/A <B>/\"config\".toml",

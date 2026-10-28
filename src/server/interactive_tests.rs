@@ -279,6 +279,27 @@ async fn paired_privileged_front_door_runs_ordinary_commands_only_in_user_shell(
     user.put_secret("TEST_SHARED_SECRET", "rotated-after-enter")
         .await
         .unwrap();
+    let attached = user
+        .enter_with_secrets(&token, &["TEST_SHARED_SECRET".into()])
+        .await
+        .unwrap();
+    for (state, handle) in [(&root, &entered.handle), (&user, &attached.handle)] {
+        assert_eq!(
+            state
+                .secret_value(handle, "TEST_SHARED_SECRET")
+                .await
+                .unwrap(),
+            "fixture-shared-snapshot"
+        );
+        assert_eq!(
+            state
+                .secret_value(handle, "TEST_SECOND_SECRET")
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
     for sudo in [true, false] {
         let command = if cfg!(windows) {
             "[Console]::Write($env:TEST_SHARED_SECRET)"
@@ -331,9 +352,47 @@ async fn paired_privileged_front_door_runs_ordinary_commands_only_in_user_shell(
     );
     root.revoke_token(&token).await.unwrap();
     assert!(
+        root.secret_value(&entered.handle, "TEST_SHARED_SECRET")
+            .await
+            .is_err()
+    );
+    assert!(
+        user.secret_value(&attached.handle, "TEST_SHARED_SECRET")
+            .await
+            .is_err()
+    );
+    assert!(
         root.run(&entered.handle, "echo never", false, None)
             .await
             .is_err()
+    );
+    // A user-side snapshot must not remain readable if its authority is unreachable.
+    let next_token = root.auth.lock().await.issue_token(None).unwrap().0;
+    let next = user
+        .enter_with_secrets(&next_token, &["TEST_SHARED_SECRET".into()])
+        .await
+        .unwrap();
+    let unavailable_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_address = unavailable_listener.local_addr().unwrap();
+    drop(unavailable_listener);
+    let mut disconnected = user.clone();
+    disconnected.peer =
+        Some(crate::peer::Peer::new(unavailable_address, user.config.max_output_bytes).unwrap());
+    assert_eq!(
+        disconnected
+            .secret_value(&next.handle, "TEST_SHARED_SECRET")
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(
+        !user
+            .sessions
+            .lock()
+            .await
+            .by_handle
+            .contains_key(&next.handle)
     );
     root.shutdown().await;
     user.shutdown().await;

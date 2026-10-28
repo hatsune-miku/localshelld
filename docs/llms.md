@@ -1,6 +1,14 @@
-# localshelld API
+# trustd API
 
 > Local shell execution over HTTP and MCP, authorized by the device owner.
+
+## Recommended agent connection: stdio
+
+Launch `trustd-stdio` as an MCP subprocess. It holds one authorized session internally and never includes a handle or owner-configured token in tool schemas or authorization responses. `run`, `secrets_get` and `destroy` do not accept a handle. `enter_preauthorized` and `revoke` appear only when the owner supplies `--token-env VARIABLE_NAME` at launch; no tool accepts a token. Always use the connected adapter's `tools/list`, not the HTTP schemas below.
+
+One adapter process is one isolation boundary, not necessarily one chat. Close the current session before entering another. Use a distinct preauthorization token per adapter, never share it with other clients. Cancellation/EOF attempts to destroy the whole session, including late authorization results; forced process termination or an unreachable daemon cannot guarantee cleanup. The adapter does not retry commands or silently replace expired authorization. Explicit plaintext `secrets_get` remains available for user-requested reads.
+
+The remaining document describes direct daemon HTTP/MCP access, where token and handle fields remain necessary.
 
 ## Discovery and access
 
@@ -23,6 +31,10 @@ Send POST bodies as JSON with `Content-Type: application/json`. Send the operati
 6. Call `POST /v1/sessions/destroy` with `{"handle":"<HANDLE>"}` when finished. To revoke an execution token and all its sessions, call `POST /v1/tokens/revoke` with `{"token":"<OWNER_SUPPLIED_TOKEN>"}`.
 
 Optional `secret_keys` are injected as environment variables into every identity-specific shell in the session. Use `$env:KEY` in PowerShell or `$KEY` in Bash without printing credential values. Omitting `secret_keys` or passing an empty list preserves a reused session's existing selection. A different nonempty selection requires destroying the session and entering again.
+
+## Explicit plaintext credential reads
+
+Discouraged unless the user explicitly requests plaintext. Prefer environment injection. After entering with the desired `secret_keys`, call `POST /v1/secrets/get` (MCP: `secrets_get`) with `{"handle":"<HANDLE>","key":"AUTHORIZED_KEY"}` to receive `{"key":"AUTHORIZED_KEY","value":"..."}`. The handle must be live and the key must be in its authorized snapshot. This does not read arbitrary vault entries or newly rotated values: destroy and re-enter to refresh the snapshot. Invalid/expired/destroyed/revoked handles return 401; keys outside the authorized selection return 403. Linked sessions must still pass validation at the issuing daemon; authority failure does not permit offline reads. Responses are not cached. Listing and entering still never return values implicitly.
 
 ## Execution, errors, and cancellation
 

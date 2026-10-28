@@ -135,6 +135,15 @@ fn health_matches(bytes: &[u8], daemon: &str) -> bool {
 }
 
 pub(crate) fn wait_healthy(address: SocketAddr, daemon: &str, timeout: Duration) -> Result<()> {
+    wait_healthy_version(address, daemon, None, timeout)
+}
+
+pub(crate) fn wait_healthy_version(
+    address: SocketAddr,
+    daemon: &str,
+    version: Option<&str>,
+    timeout: Duration,
+) -> Result<()> {
     ensure!(
         address.ip().is_loopback(),
         "health checks require a loopback address"
@@ -152,6 +161,10 @@ pub(crate) fn wait_healthy(address: SocketAddr, daemon: &str, timeout: Duration)
             if response.take(4097).read_to_end(&mut bytes).is_ok()
                 && bytes.len() <= 4096
                 && health_matches(&bytes, daemon)
+                && version.is_none_or(|version| {
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .is_ok_and(|health| health["version"] == version)
+                })
             {
                 return Ok(());
             }

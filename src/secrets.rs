@@ -1,5 +1,5 @@
-//! Credential values stay in local storage, child environments and encrypted
-//! daemon-to-daemon messages. Public tools expose names, never stored values.
+//! Credential storage, injection snapshots and encrypted daemon-to-daemon access.
+//! Explicit plaintext reads are scoped to a live session's authorized snapshot.
 use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};

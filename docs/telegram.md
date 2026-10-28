@@ -26,11 +26,11 @@ Environment="HTTP_PROXY=http://127.0.0.1:7897"
 Environment="NO_PROXY=localhost,127.0.0.1,::1"
 ```
 
-确认本机代理监听端口后重启服务。代理只需部署在后端，设备不需要直连 Telegram。Bot Token 不出现在错误消息或日志中。移除配置只移除 localshelld 中的配置，不删除 Telegram 上的 bot。
+确认本机代理监听端口后重启服务。代理只需部署在后端，设备不需要直连 Telegram。Bot Token 不出现在错误消息或日志中。移除配置只移除 trustd 中的配置，不删除 Telegram 上的 bot。
 
 ## 命令行配置
 
-也可在已连接云服务的设备上停止对应 daemon 后运行 `localshelld configure-telegram --user`，从标准输入提供一行 token，再打开命令输出的绑定链接。不要把 token 放到命令行参数中。此命令保留原配置、凭据与云登录，并占用 daemon 的监听端口，防止与运行中的 daemon 并发修改同步会话。完成后重新启动 daemon。
+也可在已连接云服务的设备上停止对应 daemon 后运行 `trustd configure-telegram --user`，从标准输入提供一行 token，再打开命令输出的绑定链接。不要把 token 放到命令行参数中。此命令保留原配置、凭据与云登录，并占用 daemon 的监听端口，防止与运行中的 daemon 并发修改同步会话。完成后重新启动 daemon。
 
 ## 同步扩展
 

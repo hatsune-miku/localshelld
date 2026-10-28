@@ -223,7 +223,7 @@ pub fn create_totp(secret: &[u8]) -> anyhow::Result<TOTP> {
         1,
         30,
         secret.to_vec(),
-        Some("localshelld".into()),
+        Some("trustd".into()),
         "local-admin".into(),
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))

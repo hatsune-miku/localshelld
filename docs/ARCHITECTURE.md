@@ -2,31 +2,35 @@
 
 ## 结论
 
-localshelld 面向有经验的设备所有者和维护人员个人自用，帮助用户将自己设备的执行权限临时委托给 AI Agent。任务、执行身份和授权生命周期由用户决定，行为约定仅为尊重用户的个人隐私。
+trustd 帮助用户将自己设备的执行身份与凭据授权给 AI Agent；常规 stdio 调用由程序保管 handle，模型不必搬运执行凭据。任务、执行身份和授权生命周期由用户决定，行为约定仅为尊重用户的个人隐私。
 
 Windows 使用 PowerShell 7 (`pwsh`)，Linux/macOS 使用 `/bin/bash`（兼容 macOS Bash 3.2）。认证、令牌和协议层使用安全 Rust，共享持久会话抽象；平台差异集中在 shell 后端、服务生命周期、文件 ACL 和执行身份。服务适配分别为 Windows SCM、Linux systemd、macOS launchd。
 
 ## 组件
 
-```text
-Browser / Agent
-  │ loopback HTTP JSON or MCP
-  ▼
-Axum transport ── admin authentication ── Argon2id / RFC 6238
-  │
-  ├─ in-memory opaque token registry + authorization metadata
-  │
-  └─ token → strong handle → persistent PowerShell / Bash process
-                              (native parser and session state)
-```
+| 程序 | 角色 |
+| --- | --- |
+| `trustd` | 维护 CLI/向导，安装、更新、配置、卸载 |
+| `trustd-system` | Windows LocalSystem daemon |
+| `trustd-root` | macOS/Linux root daemon |
+| `trustd-user` | 非提权用户 daemon、桌面授权 |
+| `trustd-stdio` | 普通用户 MCP 子进程，保管本进程的授权会话 |
 
-管理 UI 与 server 打包为同一二进制，减少安装面和跨进程机密传递。逻辑模块仍分为 transport/UI、auth、session/shell 和平台服务适配。
+维护模块只编译进维护程序；daemon 入口只启动对应身份，不提供维护子命令。共享 Rust 库保留 `localshelld` 名称，数据、加密 AAD、配对与同步标识不随产品名变化。网页资源继续嵌入程序，不另起静态资源服务。
+
+### stdio 边界
+
+Agent 宿主通过 stdio 连接接入进程，接入进程使用现有 loopback HTTP API 调用 daemon。handle/token 存在接入进程内存中，stdio 输入 schema 和授权输出移除这些字段；工具参数中的手工 handle/token 被拒绝。显式 `secrets_get` 仍返回用户要求的明文，任意命令输出不自动脱敏。
+
+一个进程一个会话，没有按代理名称或“最近授权”寻找会话的全局状态。生命周期变更串行，长命令不持有生命周期锁，销毁/取消可以并发终止执行。每个请求独立记录取消信号；取消授权不会简单丢弃 HTTP 响应，而会接收迟到的 handle 后清理。EOF 后拒绝新授权并尝试销毁；强杀、断电与 daemon 不可达不保证清理，用户仍可撤销签发端记录。
+
+预授权 token 通过宿主环境配置而非模型参数进入；各进程必须单独分配 token。服务报告已有存活会话时拒绝接管，避免销毁其他调用者。宿主多聊天共享同一进程时也共享权限，这不是聊天级身份认证。HTTP MCP 的 transport session 仍只承担协议取消能力，不替代执行授权。
 
 ### 用户态与高权限 daemon
 
-同一二进制以两个身份独立运行：系统 daemon 使用原有 SCM/systemd/LaunchDaemon；`serve --user` 使用当前非高权限账户，安装为用户登录自启动项。用户 daemon 必须通过进程身份检查，拒绝 root/管理员，不能与 `--allow-unelevated` 合用。默认端口分别为 32119 和 32120，配置目录、Master/TOTP 和签发令牌相互独立。
+两个 daemon 使用独立可执行文件：Windows `trustd-system` 必须为 LocalSystem，Unix `trustd-root` 必须为 root；`trustd-user` 必须为非提权登录用户。不存在 `--allow-unelevated` 绕过参数。默认端口分别为 32119 和 32120，配置目录、Master/TOTP 和签发令牌相互独立。
 
-MCP 入口推荐用户 daemon，工具名为 `secrets_list`、`enter_interactive`、`enter_preauthorized`、`run`、`destroy`、`revoke`。Windows `run.privilege_level` 必填，三选一：`current-user`、`as-administrator`、`nt-authority/system`；Linux/macOS 保持必填 boolean `sudo`。普通用户执行路由至用户 daemon，高权限执行须持有系统授权。每种身份拥有独立的 shell 状态，不复制已有 shell 的变量或目录，不自动回退。
+MCP 入口推荐用户 daemon，工具名为 `secrets_list`、`secrets_get`、`enter_interactive`、`enter_preauthorized`、`run`、`destroy`、`revoke`。Windows `run.privilege_level` 必填，三选一：`current-user`、`as-administrator`、`nt-authority/system`；Linux/macOS 保持必填 boolean `sudo`。普通用户执行路由至用户 daemon，高权限执行须持有系统授权。每种身份拥有独立的 shell 状态，不复制已有 shell 的变量或目录，不自动回退。
 
 Windows 的管理员后端使用配对用户进程的 linked elevated token，校验进程创建时间、SID、登录 session 及令牌属性，保证管理员与当前用户是同一个账户；不以 SYSTEM 修改环境变量冒充。通过配对加密桥取得用户环境和 cwd，保留用户 USERPROFILE、真实 HKCU 和用户 PATH。为重定向管道继承，在 broker 的非交互 session 内运行，不保证交互桌面或映射网络驱动器。PowerShell 仍使用 `-NoProfile`，不自动执行 profile 脚本。无 linked token 或 OS 权限不足时明确失败。SYSTEM 选项只允许真实 LocalSystem。
 
@@ -84,19 +88,21 @@ Master Password 只保存 Argon2id PHC verifier。TOTP 验证使用可恢复的�
 
 `enter.secret_keys` 选择本次需要的凭据，复用原有 token / 交互授权。用户同意后在 session 中保留不可变的环境快照，各身份 shell 创建时直接覆盖对应子进程环境，不在命令文本、参数或日志中插值。Windows 按不区分大小写的名称替换继承项；管理员后端先取得同用户 profile 环境，再应用所选凭据。惰性创建的用户/管理员 shell 也使用原快照，不重新读取已轮换的值。内部 `SessionEnvironment` 仅在配对加密桥上、验证有效 handle 后返回快照，不作为公开 secret 工具。
 
-记忆允许另外记录曾确认的 key 范围，新增 key 必须再次显示授权窗口；没有新增 token 类别。公开 secret 工具只有 `secrets_list`。列表和 enter 响应不含 value，但注入不是针对 shell 本身的保密边界：获授权的命令仍可读取并输出环境。删除后台凭据不清理已有进程环境，终止已有委托应销毁会话或撤销其 token。
+记忆允许另外记录曾确认的 key 范围，新增 key 必须再次显示授权窗口；没有新增 token 类别。`secrets_list` 只列名称，`secrets_get` 通过存活 handle 显式读取该会话已授权 key 的明文快照，与 HTTP `POST /v1/secrets/get` 共用实现；关联会话在读取前再次验证系统授权，失联时不返回缓存。列表和 enter 响应不含 value，但注入不是针对 shell 本身的保密边界：获授权的命令仍可读取并输出环境。删除后台凭据不清理已有进程环境，终止已有委托应销毁会话或撤销其 token。
 
 ### 本机传输
 
 HTTP/MCP 使用本机 loopback，配置验证限制 bind 和 daemon 间通信目标为 loopback 地址。项目不提供远程监听或公用服务器模式。
 
-### 显式自更新
+### 整套安装与显式更新
 
-`update` 是独立 CLI 工作流，不通过 HTTP/MCP 暴露，不在服务启动时后台自动下载。版本发现固定使用官方 GitHub 仓库；稳定通道同时检查语义版本后缀和 prerelease 标记。各平台附件统一打包，构建时嵌入 Release 版本和 Git commit；打包前检查每个平台的版本清单，避免 CI 部分重跑造成不同 RC 版本混装。
+`update` 仍是维护 CLI 的显式操作，不在 daemon 中提供或后台自动运行。固定 GitHub 仓库、版本选择、HTTPS 和 SHA-256 校验保留，发布包必须同时包含维护、用户、stdio 与对应平台高权限程序。每个程序的版本都要匹配选定 Release；不接受旧单文件附件。
 
-先下载、校验 SHA-256、只提取预期二进制并检查其 `--version`，再进入停服/替换阶段。安装目录和暂存目录必须受操作系统权限保护，文件锁排除并发更新。Unix 通过同一文件系统内的 rename 原子替换文件名；Windows 由旧程序的隐藏副本在原 CLI 退出后替换文件。两者都保留旧二进制，并对原本运行的服务做状态和版本健康检查，失败时尝试回滚。配置及 seal key 不参与替换；原本停止的服务不被启动。
+普通用户更新下载并校验完整套件，再启动该套件的维护向导；`--download-only` 只输出已校验目录，`--check` 只查询。启动向导不是更新完成，服务切换和系统授权由维护流程统一处理。
 
-这不是零停机热更新，重启会撤销全部内存令牌和会话；文件名的原子替换也不是服务生命周期的断电事务。Windows 助手异步完成，日志中的 SUCCESS 才确认成功。SHA-256 校验数据仍来自 GitHub，目前不提供独立签名验证。
+维护计划绑定所有程序的名称和 SHA-256，版本目录使用整套摘要。只允许固定平台角色，不接受任意路径或额外文件。暂存、提权后与安装后分别核验，源程序不覆盖，已有摘要目录内容不符即失败。旧配置、授权状态和 seal key 备份后才切换服务；系统安装失败尝试恢复旧注册，用户端启动失败明确报告并保留修复入口。配置、系统服务标签与协议身份保留 `localshelld`，程序与界面显示 trustd。
+
+系统保险库本轮不接入，seal key 仍受本机文件权限保护；没有新的 Keychain/Credential Manager 解锁依赖。用户管理页保留明文导入/导出，std​io 不改变这项用户能力。
 
 ## 需求覆盖
 
@@ -119,6 +125,6 @@ HTTP/MCP 使用本机 loopback，配置验证限制 bind 和 daemon 间通信目
 ## 运行特性
 
 - 输出是分别限额的 stdout/stderr 聚合响应，支持单次 stdin + EOF，不提供实时流、PTY 或后续输入。命令可运行至完成，客户端有独立超时；长任务管理由 harness 负责，不新增任务系统。
-- Windows、Linux、macOS 服务安装路径均指向当前二进制；升级时应先停止服务并替换已安装位置。macOS 使用 `/Library/LaunchDaemons/dev.localshelld.plist`，`bootstrap system` 安装，`bootout` 卸载；配置和 seal key 保留。
+- 各平台服务注册分别指向专用 daemon；维护向导把整套程序放入摘要版本目录，再切换注册，不原地覆盖正在运行的程序。macOS 使用 `/Library/LaunchDaemons/dev.localshelld.plist`，`bootstrap system` 安装，`bootout` 卸载；配置和 seal key 保留。
 - Windows 使用 Job Object 清理进程树，Unix 清理可追踪后代和原始进程组。主动彻底脱离的 Unix daemon 不在回收保证内，这不是容器或作业调度器。刻意改写 `__localshelld_` 内部变量只会破坏自身会话，不构成额外提权。
 - 日志不记录命令和凭据，用户的任务内容保留在会话中。

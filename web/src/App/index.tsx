@@ -101,7 +101,7 @@ export function App() {
           </div>
         )}
         <footer className="workspace-footer">
-          <span>localshelld {health?.version}</span>
+          <span>trustd {health?.version}</span>
           <span className="workspace-endpoint">{location.host}/mcp</span>
         </footer>
       </div>
