@@ -13,10 +13,9 @@ use std::{
 use tokio::sync::{Mutex, watch};
 
 use crate::{
-    execution::{PrivilegeLevel, RunOptions},
+    api::{self, Operation},
     mcp_text::{
-        INVALID_TIMEOUT, MISSING_TOOL_NAME, SERIALIZATION_FAILED, missing_string_argument,
-        server_instructions, tool_definitions, unknown_method, unknown_tool,
+        MISSING_TOOL_NAME, server_instructions, tool_definitions, unknown_method, unknown_tool,
     },
     server::{ApiError, AppState},
 };
@@ -208,142 +207,9 @@ async fn call_tool(state: &AppState, params: Value) -> Result<Value, ApiError> {
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    match name {
-        "secrets_list" => tool_json(json!({"keys":state.secret_keys().await?})),
-        "enter_interactive" | "localshelld_enter_interactive" => {
-            if string_arg(&arguments, "confirm_text")? != "OK" {
-                return Err(ApiError::bad_request("confirm_text must equal OK"));
-            }
-            let result = state
-                .enter_interactive_with_secrets(
-                    string_arg(&arguments, "agent_name")?,
-                    string_arg(&arguments, "request_reason")?,
-                    &secret_keys_arg(&arguments)?,
-                )
-                .await?;
-            tool_json(result)
-        }
-        "enter_preauthorized" | "localshelld_enter_with_preauthorized_credential" => {
-            let token = string_arg(&arguments, "token")?;
-            let confirm_text = string_arg(&arguments, "confirm_text")?;
-            if confirm_text != "OK" {
-                return Err(ApiError::bad_request(missing_string_argument(
-                    "confirm_text",
-                )));
-            }
-
-            let result = state
-                .enter_with_secrets(token, &secret_keys_arg(&arguments)?)
-                .await?;
-            tool_json(
-                serde_json::to_value(result)
-                    .map_err(|_| ApiError::internal(SERIALIZATION_FAILED))?,
-            )
-        }
-        "run" | "localshelld_run" => {
-            let handle = string_arg(&arguments, "handle")?;
-            let command = string_arg(&arguments, "command")?;
-            let privilege_level = privilege_arg(&arguments)?;
-            let stdin = match arguments.get("stdin") {
-                None => String::new(),
-                Some(Value::String(value)) => value.clone(),
-                _ => {
-                    return Err(ApiError::bad_request(
-                        "stdin must be a string; omit it for EOF",
-                    ));
-                }
-            };
-            let timeout = timeout_arg(&arguments)?;
-            let result = state
-                .run_command(
-                    handle,
-                    command,
-                    privilege_level,
-                    RunOptions {
-                        stdin,
-                        timeout_seconds: timeout,
-                    },
-                )
-                .await?;
-            tool_json(
-                serde_json::to_value(result)
-                    .map_err(|_| ApiError::internal(SERIALIZATION_FAILED))?,
-            )
-        }
-        "destroy" | "localshelld_destroy_session" => {
-            state
-                .destroy_session(string_arg(&arguments, "handle")?)
-                .await?;
-            tool_json(json!({ "destroyed": true }))
-        }
-        "revoke" | "localshelld_revoke_token" => {
-            state.revoke_token(string_arg(&arguments, "token")?).await?;
-            tool_json(json!({ "revoked": true }))
-        }
-        _ => Err(ApiError::bad_request(unknown_tool(name))),
-    }
-}
-
-fn secret_keys_arg(arguments: &Value) -> Result<Vec<String>, ApiError> {
-    let Some(value) = arguments.get("secret_keys") else {
-        return Ok(vec![]);
-    };
-    let keys: Vec<String> = serde_json::from_value(value.clone()).map_err(|_| {
-        ApiError::bad_request(
-            "secret_keys must be an array of uppercase environment variable names",
-        )
-    })?;
-    crate::secrets::normalize_keys(&keys)
-}
-
-fn privilege_arg(arguments: &Value) -> Result<PrivilegeLevel, ApiError> {
-    #[cfg(windows)]
-    {
-        if arguments.get("sudo").is_some() {
-            return Err(ApiError::bad_request(
-                "Windows requires privilege_level instead of sudo",
-            ));
-        }
-        match arguments.get("privilege_level").and_then(Value::as_str) {
-            Some("current-user") => Ok(PrivilegeLevel::CurrentUser),
-            Some("as-administrator") => Ok(PrivilegeLevel::Administrator),
-            Some("nt-authority/system") => Ok(PrivilegeLevel::System),
-            _ => Err(ApiError::bad_request(
-                "privilege_level must be current-user, as-administrator, or nt-authority/system",
-            )),
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        if arguments.get("privilege_level").is_some() {
-            return Err(ApiError::bad_request(
-                "this platform requires boolean sudo, not privilege_level",
-            ));
-        }
-        arguments
-            .get("sudo")
-            .and_then(Value::as_bool)
-            .map(PrivilegeLevel::from_sudo)
-            .ok_or_else(|| ApiError::bad_request("sudo must be an explicit boolean"))
-    }
-}
-
-fn string_arg<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, ApiError> {
-    arguments
-        .get(name)
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::bad_request(missing_string_argument(name)))
-}
-
-fn timeout_arg(arguments: &Value) -> Result<Option<u64>, ApiError> {
-    match arguments.get("timeout_seconds") {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .filter(|seconds| *seconds > 0)
-            .map(Some)
-            .ok_or_else(|| ApiError::bad_request(INVALID_TIMEOUT)),
-    }
+    let operation =
+        Operation::from_name(name).ok_or_else(|| ApiError::bad_request(unknown_tool(name)))?;
+    tool_json(api::execute(state, operation, arguments).await?)
 }
 
 fn tool_json(value: Value) -> Result<Value, ApiError> {
@@ -357,6 +223,10 @@ fn tool_json(value: Value) -> Result<Value, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        api::{privilege_arg, secret_keys_arg, timeout_arg},
+        execution::PrivilegeLevel,
+    };
 
     #[test]
     fn exposes_all_required_tools_and_privacy_guidance() {

@@ -287,7 +287,11 @@ Agent 可匿名调用 `secrets_list({})`，再把需要的 key 交给任一 ente
 
 | 路径                      | 请求核心字段                                                               | 用途                 |
 | ------------------------- | -------------------------------------------------------------------------- | -------------------- |
+| `/llms.txt` | 无，GET | AI 易读接口文档，两端均可访问，含实时生成的接口 schema |
+| `/v1/capabilities` | 无，GET | 六项操作与 MCP 共用的输入／输出 schema |
 | `/v1/secrets/keys`        | 无，GET                                                                    | 列出凭据 key         |
+| `/v1/sessions/enter/interactive` | `agent_name`、`request_reason`、`confirm_text:"OK"`，可选 `secret_keys` | 桌面／Telegram 交互授权 |
+| `/v1/sessions/enter/preauthorized` | `token`、`confirm_text:"OK"`，可选 `secret_keys` | 与 MCP 对齐的预授权入口 |
 | `/v1/sessions/enter`      | `token`、可选 `secret_keys`                                                | 建立或复用令牌的会话 |
 | `/v1/commands/run`        | `handle`, `command`, Windows `privilege_level` / Unix `sudo`，可选 `stdin` | 显式选择执行身份     |
 | `/v1/sessions/destroy`    | `handle`                                                                   | 终止会话             |
@@ -295,6 +299,8 @@ Agent 可匿名调用 `secrets_list({})`，再把需要的 key 交给任一 ente
 | `/v1/admin/tokens/issue`  | `credential`, duration                                                     | 签发令牌             |
 | `/v1/admin/tokens/list`   | `credential`                                                               | 列出当前运行期元数据 |
 | `/v1/admin/tokens/revoke` | `credential`, `id`                                                         | 由用户撤销指定令牌   |
+
+HTTP 与 MCP 共用六项操作的校验及业务逻辑，HTTP 直接返回 MCP 的 structuredContent。交互授权期限为 60 秒；接受、拒绝和超时都返回 HTTP 200，调用者须检查 `status`。HTTP 取消执行使用 `sessions/destroy`，会终止整个会话；客户端断连不自动停止命令。旧 `sessions/enter` 保持兼容。
 
 ## 配置
 

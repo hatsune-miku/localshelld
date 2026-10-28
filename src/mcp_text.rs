@@ -123,7 +123,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name":"enter_interactive", "title":format!("Request interactive access to {shell}"),
-            "description":"Ask the owner through the native desktop prompt. Supply your name and a truthful reason; no token is required. Waits for approval, denial or a fixed 60000 ms deadline; allow more than 60 seconds at the client. Names are self-reported, not authenticated. The owner may remember choices. Read status and the owner's btw note. An authorized result does not imply a fresh button click.",
+            "description":"Ask the owner through the desktop prompt and, when configured through the cloud service, Telegram. Supply your name and a truthful reason; no token is required. Waits for approval, denial or a fixed 60000 ms deadline; allow more than 60 seconds at the client. Names are self-reported, not authenticated. The owner may remember choices. Read status and the owner's btw note. An authorized result does not imply a fresh button click.",
             "inputSchema":{"type":"object","properties":{
                 "agent_name":{"type":"string","minLength":1,"maxLength":128},
                 "request_reason":{"type":"string","minLength":1,"maxLength":16384},

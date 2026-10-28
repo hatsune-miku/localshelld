@@ -1093,30 +1093,11 @@ pub(crate) fn strong_handle() -> String {
 }
 
 #[derive(Deserialize)]
-struct TokenBody {
-    token: String,
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnterBody {
     token: String,
     #[serde(default)]
     secret_keys: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RunBody {
-    handle: String,
-    command: String,
-    #[cfg(not(windows))]
-    sudo: bool,
-    #[cfg(windows)]
-    privilege_level: PrivilegeLevel,
-    #[serde(default)]
-    stdin: String,
-    timeout_seconds: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1153,6 +1134,7 @@ struct AdminRevokeBody {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(crate::management::routes())
+        .merge(crate::api::routes())
         .route("/", get(crate::assets::serve))
         .route("/health", get(health))
         // AEAD/base64 expands a valid public JSON request beyond 2 MiB.
@@ -1161,12 +1143,8 @@ pub fn router(state: AppState) -> Router {
             post(bridge::handle).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route("/v1/sessions/enter", post(enter))
-        .route("/v1/secrets/keys", get(secret_keys))
-        .route("/v1/commands/run", post(run))
-        .route("/v1/sessions/destroy", post(destroy))
         .route("/v1/sessions/validate", post(validate))
         .route("/v1/sessions/watch", post(watch))
-        .route("/v1/tokens/revoke", post(revoke))
         .route("/v1/admin/tokens/issue", post(issue))
         .route("/v1/admin/tokens/list", post(list_tokens))
         .route("/v1/admin/tokens/revoke", post(admin_revoke))
@@ -1248,40 +1226,6 @@ async fn enter(
     ))
 }
 
-async fn secret_keys(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(serde_json::json!({"keys":state.secret_keys().await?})))
-}
-
-async fn run(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    Json(body): Json<RunBody>,
-) -> Result<Json<ExecutionResult>, ApiError> {
-    Ok(Json(
-        state
-            .run_command(
-                &body.handle,
-                &body.command,
-                {
-                    #[cfg(windows)]
-                    {
-                        body.privilege_level
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        PrivilegeLevel::from_sudo(body.sudo)
-                    }
-                },
-                RunOptions {
-                    stdin: body.stdin,
-                    timeout_seconds: body.timeout_seconds,
-                },
-            )
-            .await?,
-    ))
-}
-
 async fn validate(
     axum::extract::State(state): axum::extract::State<AppState>,
     Json(body): Json<HandleBody>,
@@ -1306,22 +1250,6 @@ async fn watch(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state.validate_session(&body.handle, true).await?;
     Ok(Json(serde_json::json!({"valid": true})))
-}
-
-async fn destroy(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    Json(body): Json<HandleBody>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    state.destroy_session(&body.handle).await?;
-    Ok(Json(serde_json::json!({ "destroyed": true })))
-}
-
-async fn revoke(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    Json(body): Json<TokenBody>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    state.revoke_token(&body.token).await?;
-    Ok(Json(serde_json::json!({ "revoked": true })))
 }
 
 async fn issue(

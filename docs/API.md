@@ -2,15 +2,61 @@
 
 推荐用户 daemon：`http://127.0.0.1:32120`；系统 daemon 默认 `http://127.0.0.1:32119`。执行凭据放在 JSON body 中，不放 URL。两端升级时应使用相同版本。
 
+`GET /llms.txt` 在两个入口均无需鉴权，返回 `text/plain; charset=utf-8` 的 AI 易读接口文档，包含调用流程、平台参数、错误与取消语义，以及从实际接口定义生成的输入／输出 JSON Schema。默认地址为 `http://127.0.0.1:32119/llms.txt` 和 `http://127.0.0.1:32120/llms.txt`；仍保留 loopback Host/Origin 限制，不改变执行和管理接口的鉴权。
+
+## 能力发现与 MCP 对应关系
+
+`GET /v1/capabilities` 无需凭据，返回当前 daemon 的 `protocol`、`version`、`commit`、`platform` 和 `operations`。每项操作包含 `name`、`method`、`path`、`inputSchema`、`outputSchema`；schema 与 MCP `tools/list` 共用同一份定义。返回的 `cancellation` 描述取消方式，`interactive_timeout_ms` 为 60000。
+
+| MCP 工具 | HTTP 接口 |
+|---|---|
+| `secrets_list` | `GET /v1/secrets/keys` |
+| `enter_interactive` | `POST /v1/sessions/enter/interactive` |
+| `enter_preauthorized` | `POST /v1/sessions/enter/preauthorized` |
+| `run` | `POST /v1/commands/run` |
+| `destroy` | `POST /v1/sessions/destroy` |
+| `revoke` | `POST /v1/tokens/revoke` |
+
+HTTP 请求直接发送 MCP 工具的 `arguments` 对象，响应直接返回对应的 `structuredContent`，不需要 JSON-RPC 外层。两种入口共用参数校验和业务处理；token、handle、记忆选择和凭据授权可以跨入口使用。未知字段、错误类型和不支持的平台参数会被拒绝，不自动转换。HTTP 参数错误返回 400；JSON 格式、Content-Type 等传输错误由 HTTP 层返回 400/415/422。凭据无效返回 401，执行身份越权返回 403，授权通道不可用返回 503，业务错误响应格式为 `{"error":"..."}`。
+
 ## 进入与执行
 
 `GET /health` 无需凭据，返回 `status`、`service`、`daemon`、`version`、`commit`。本地构建版本为 `<Cargo版本>-dev`。HTTP/MCP 不提供更新或下载执行接口。
 
-`POST /v1/sessions/enter`：`{"token":"<LOCALSHELLD_TOKEN>","secret_keys":["JENKINS_CI_TOKEN"]}`。`secret_keys` 可省略。
+### 预授权
+
+`POST /v1/sessions/enter/preauthorized`：`{"token":"<LOCALSHELLD_TOKEN>","confirm_text":"OK","secret_keys":["JENKINS_CI_TOKEN"]}`。`secret_keys` 可省略，`confirm_text` 必须为 `OK`，与 MCP 一致。
+
+原有 `POST /v1/sessions/enter` 保留兼容，仍接受 `{"token":"<LOCALSHELLD_TOKEN>","secret_keys":["JENKINS_CI_TOKEN"]}`，不要求也不接受 `confirm_text`。
 
 返回 `handle`、`reused`、`secret_keys`、`shell`、`platform`、`daemon`、`privilege_levels`、`identities`、`expires_at`、`expires_at_iso`、`message`。Linux/macOS 另有 `sudo_available`。同一 token 有存活会话时复用同一 handle，`reused:true` 不表示命中记忆授权。`expires_at` 是 Unix epoch **秒**，`expires_at_iso` 是 UTC ISO 8601；永久令牌两者均为 null。
 
 `identities` 按执行身份名返回实际操作系统账户信息。Windows 包含 user、SID、is_system、elevated、integrity、session_id；Unix 包含 user、uid、elevated。仅报告当前可用且授权允许的身份，不以平台名推断 SYSTEM。不同身份的变量、目录和环境独立持久化，不复制已运行 shell 的状态。
+
+### 交互授权
+
+`POST /v1/sessions/enter/interactive` 不需要 token 或管理登录：
+
+```json
+{
+  "agent_name": "Example App",
+  "request_reason": "执行用户要求的本机检查。",
+  "confirm_text": "OK",
+  "secret_keys": []
+}
+```
+
+请求进入同一套桌面／Telegram 授权流程，不存在通过 HTTP 提交接受或拒绝的接口。Telegram 仍要求已连接云服务。名字、原因、凭据选择、记忆和权限范围与 MCP 完全相同；`confirm_text` 只是隐私确认，不代表用户已批准执行。
+
+客户端调用超时应大于 60 秒。接受、拒绝和超时都返回 HTTP 200，必须检查 `status`：
+
+- `authorized`：普通 enter 字段加 `status`、`btw`，包含后续执行需要的 `handle`，不返回原始 token。
+- `denied`：`status`、`automatic`、`btw`，不包含 handle。`automatic:true` 表示用户先前记忆的拒绝。
+- `timed_out`：`status`、`timeout_ms:60000`、`btw`，不包含 handle。忽略或关闭弹窗仍等待原来的截止时间。
+
+`btw` 是用户附言；`authorized` 不代表本次一定发生了新的点击。交互授权目前没有单独的提前取消接口，与 MCP 一样使用固定期限。不要在客户端超时后自动重发，以免重复请求授权。
+
+### 执行
 
 `POST /v1/commands/run` 的 Windows 请求：
 
@@ -70,8 +116,39 @@ stdout、stderr 分别捕获，各最多保存 `max_output_bytes` 字节；非 U
 - `session_ended_reason` 为 `shell_exited`、`timeout`、`cancelled` 或 null。`cancelled` 包括显式取消、销毁、撤销与关闭导致的中断；队列中尚未开始的命令可能返回会话已结束错误。
 - **HTTP 断连或客户端自身超时不自动停止命令**。worker 继续消费输出，避免下次调用串包；客户端不得因响应丢失而盲目重试有副作用的命令。
 - `POST /v1/sessions/destroy`，body `{"handle":"<HANDLE>"}`，显式销毁会话。`POST /v1/tokens/revoke`，body `{"token":"<TOKEN>"}`，撤销并清理该令牌所有会话。服务仍持有记录的过期 token 可以撤销自身。
+- HTTP 客户端需要取消执行中的命令时，从另一请求调用 `sessions/destroy`。效果与 MCP run 的取消通知一致：整个 handle 及其关联进程树终止，不只是某一条命令。HTTP destroy 返回 `{"destroyed":true}`；仍保持连接的 run 返回已捕获结果和 `session_ended_reason:"cancelled"`，而 MCP 取消通知采用协议规定的 204 响应。
 - Windows shell 在恢复执行前就加入禁止 breakaway 的 kill-on-close Job Object，销毁时清理其整棵进程树。Unix 清理可追踪后代和原始进程组；主动 double-fork 后完全脱离、被重新托管的 daemon 不在保证范围内。
 - 单 daemon 令牌到期阻止后续调用；跨 daemon 会话的授权到期监视还会取消关联命令。系统端内部 `/v1/sessions/validate` 与 `/v1/sessions/watch` 使用 handle 验证，watch 最多等 15 秒；客户端无需直接使用。
+
+## Windows HTTP 调用示例
+
+以下示例请求交互授权，以当前用户执行 `whoami`，随后销毁会话；不打印 token 或 handle：
+
+```powershell
+$apiBase = 'http://127.0.0.1:32120'
+$approval = Invoke-RestMethod -Method Post -Uri "$apiBase/v1/sessions/enter/interactive" `
+  -ContentType 'application/json' -TimeoutSec 75 -Body (@{
+    agent_name = 'Example App'
+    request_reason = '检查当前执行账户。'
+    confirm_text = 'OK'
+  } | ConvertTo-Json)
+if ($approval.status -ne 'authorized') {
+  throw "Authorization result: $($approval.status)"
+}
+try {
+  $result = Invoke-RestMethod -Method Post -Uri "$apiBase/v1/commands/run" `
+    -ContentType 'application/json' -Body (@{
+      handle = $approval.handle
+      command = 'whoami'
+      privilege_level = 'current-user'
+      timeout_seconds = 10
+    } | ConvertTo-Json)
+  $result.stdout
+} finally {
+  Invoke-RestMethod -Method Post -Uri "$apiBase/v1/sessions/destroy" `
+    -ContentType 'application/json' -Body (@{ handle = $approval.handle } | ConvertTo-Json) | Out-Null
+}
+```
 
 ## 管理接口
 
@@ -168,7 +245,7 @@ Master/TOTP 失败在每个进程实例内限制为 5 次/分钟；成功验证�
 | 工具 | 用途 |
 |---|---|
 | `secrets_list` | 无需授权列出凭据 key，不返回 value |
-| `enter_interactive` | 桌面交互式请求授权，无 token 参数 |
+| `enter_interactive` | 桌面／Telegram 交互式请求授权，无 token 参数 |
 | `enter_preauthorized` | 使用用户事先签发的 token 进入 |
 | `run` | 显式选择身份，执行单次命令并传入可选 stdin |
 | `destroy` | 销毁会话及所有关联进程树 |

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod api;
 pub mod assets;
 pub mod auth;
 pub(crate) mod bridge;
