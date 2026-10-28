@@ -380,6 +380,10 @@ fn execute(
         #[cfg(not(windows))]
         {
             super::user_service::uninstall()?;
+            super::installation::wait_listener_closed(
+                Config::load(&state.user_config)?.bind,
+                Duration::from_secs(30),
+            )?;
             super::user_service::install_at(&user_executable, &state.user_config)?;
         }
         let user = Config::load(&state.user_config)?;

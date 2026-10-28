@@ -245,6 +245,8 @@ fn apply_plan(plan: &Plan, paths: &MachinePaths) -> Result<()> {
         // Same-account elevated management can replace an administrator-owned
         // old task, but the new task still uses InteractiveToken/LeastPrivilege.
         super::super::user_service::uninstall()?;
+        let user = Config::load(&plan.user_config)?;
+        super::super::installation::wait_listener_closed(user.bind, Duration::from_secs(30))?;
         super::super::user_service::install_at(
             &super::super::bundle::beside(&executable, super::super::bundle::USER)?,
             &plan.user_config,

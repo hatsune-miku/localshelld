@@ -134,6 +134,27 @@ fn health_matches(bytes: &[u8], daemon: &str) -> bool {
     })
 }
 
+/// Task Scheduler can report a stopped action before the old listener has
+/// finished closing. Never start its replacement while that port is still held.
+/// This only waits; it does not kill a foreground process using the same port.
+pub(crate) fn wait_listener_closed(address: SocketAddr, timeout: Duration) -> Result<()> {
+    ensure!(
+        address.ip().is_loopback(),
+        "expected a loopback daemon address"
+    );
+    let deadline = Instant::now() + timeout;
+    loop {
+        if std::net::TcpListener::bind(address).is_ok() {
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "previous user daemon listener at {address} is still open; close any manually started daemon before repairing the installation"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 pub(crate) fn wait_healthy(address: SocketAddr, daemon: &str, timeout: Duration) -> Result<()> {
     wait_healthy_version(address, daemon, None, timeout)
 }
@@ -359,6 +380,20 @@ mod tests {
     }
 
     #[test]
+    fn replacement_waits_for_the_old_listener_without_terminating_it() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        assert!(wait_listener_closed(address, Duration::ZERO).is_err());
+        let closer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            drop(listener);
+        });
+        wait_listener_closed(address, Duration::from_secs(3)).unwrap();
+        closer.join().unwrap();
+        assert!(wait_listener_closed("192.0.2.1:32120".parse().unwrap(), Duration::ZERO).is_err());
+    }
+
+    #[test]
     fn startup_probe_checks_a_real_loopback_response() {
         use std::{io::Write, net::TcpListener};
         for (identity, expected) in [("user", true), ("privileged", false)] {
@@ -374,6 +409,7 @@ mod tests {
                     assert!(Instant::now() < deadline, "loopback probe never connected");
                     thread::sleep(Duration::from_millis(10));
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
