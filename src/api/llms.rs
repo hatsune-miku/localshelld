@@ -7,7 +7,8 @@ use crate::{mcp_text::server_instructions, server::AppState};
 /// Public documentation uses only static schemas and non-sensitive daemon metadata.
 /// Returning String makes Axum serve text/plain; charset=utf-8, not the SPA fallback.
 pub(super) async fn document(State(state): State<AppState>) -> String {
-    let mut text = String::from(include_str!("../../docs/llms.md"));
+    // Git may check the template out with CRLF on Windows; keep the wire format stable.
+    let mut text = include_str!("../../docs/llms.md").replace("\r\n", "\n");
     let mode = serde_json::to_value(state.mode).expect("daemon mode is serializable");
     write!(
         text,

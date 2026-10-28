@@ -138,6 +138,7 @@ async fn llms_is_public_plain_text_with_live_schemas_on_both_daemons() {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let text = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(text.starts_with("# trustd API\n"));
+        assert!(!text.contains('\r'));
         assert!(text.contains(&format!("Base URL: http://{}\n", state.config.bind)));
         let mode = serde_json::to_value(state.mode).unwrap();
         assert!(text.contains(&format!("Daemon: {}\n", mode.as_str().unwrap())));
