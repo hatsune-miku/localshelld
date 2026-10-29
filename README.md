@@ -187,7 +187,7 @@ trustd update --download-only
 
 `--check` 只查询，不下载或停服。正常更新从普通用户终端发起：下载完整套件，验证 SHA-256、平台与每个程序的版本，然后启动新版本维护向导。**向导完成才算更新成功**，启动向导不代表服务已经切换。`--download-only` 只准备已校验套件，适合无图形环境；命令会输出其目录。实际更新应在独立终端运行，不在 daemon 创建的执行会话内执行。
 
-稳定通道排除所有 RC；要包含 RC 使用 `--prerelease`。降级必须显式指定 `--tag` 与 `--allow-downgrade`。发布源为 `hatsune-miku/localshelld` GitHub Releases；下载使用系统/环境 HTTP 代理、HTTPS 和发布包校验值，尚无独立发布签名。
+稳定通道排除所有 RC；要包含 RC 使用 `--prerelease`。降级必须显式指定 `--tag` 与 `--allow-downgrade`。发布源为 `hatsune-miku/trustd` GitHub Releases；下载使用系统/环境 HTTP 代理、HTTPS 和发布包校验值，尚无独立发布签名。
 
 从 localshelld 迁移时，解压完整 trustd 套件并运行维护向导，不要用旧的单文件更新器替换某个 exe。下列标识为兼容已有数据与部署而保留：
 

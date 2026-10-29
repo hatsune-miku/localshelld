@@ -98,6 +98,32 @@ fn bounded_reads_reject_oversized_data() {
 }
 
 #[test]
+fn release_source_matches_the_renamed_repository_without_widening_trust() {
+    assert_eq!(API, format!("https://api.github.com/repos/{REPOSITORY}"));
+    for name in [
+        "trustd-windows-x86_64.zip",
+        "trustd-macos-aarch64.tar.gz",
+        "SHA256SUMS",
+    ] {
+        let url = format!(
+            "https://github.com/hatsune-miku/trustd/releases/download/v0.1.0-rc.35.1/{name}"
+        );
+        assert_eq!(asset_url(&url).unwrap().as_str(), url);
+    }
+    for url in [
+        "https://github.com/hatsune-miku/localshelld/releases/download/v1.0.0/tool.zip",
+        "https://github.com/another-owner/trustd/releases/download/v1.0.0/tool.zip",
+        "https://github.com/hatsune-miku/trustd-other/releases/download/v1.0.0/tool.zip",
+        "https://github.com.example.org/hatsune-miku/trustd/releases/download/v1.0.0/tool.zip",
+        "http://github.com/hatsune-miku/trustd/releases/download/v1.0.0/tool.zip",
+        "https://user@github.com/hatsune-miku/trustd/releases/download/v1.0.0/tool.zip",
+        "https://github.com:8443/hatsune-miku/trustd/releases/download/v1.0.0/tool.zip",
+    ] {
+        assert!(asset_url(url).is_err(), "unexpected trusted URL: {url}");
+    }
+}
+
+#[test]
 fn rejects_external_asset_url_before_network_access() {
     let asset = Asset {
         name: "evil".into(),

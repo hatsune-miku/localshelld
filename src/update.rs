@@ -17,8 +17,8 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const REPOSITORY: &str = "hatsune-miku/localshelld";
-const API: &str = "https://api.github.com/repos/hatsune-miku/localshelld";
+const REPOSITORY: &str = "hatsune-miku/trustd";
+const API: &str = "https://api.github.com/repos/hatsune-miku/trustd";
 const MAX_DOWNLOAD: u64 = 128 * 1024 * 1024;
 // Four role-specific programs may jointly exceed the old single-executable
 // limit. Keep per-program/download limits and bound total expanded tar bytes.
@@ -197,8 +197,8 @@ fn asset_for(release: &Release, platform: &str) -> Result<(usize, String)> {
     bail!("release {} has no asset for {platform}", release.tag_name)
 }
 
-fn asset_response(client: &Client, asset: &Asset) -> Result<reqwest::blocking::Response> {
-    let url = reqwest::Url::parse(&asset.browser_download_url)?;
+fn asset_url(value: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(value)?;
     ensure!(
         url.scheme() == "https"
             && url.host_str() == Some("github.com")
@@ -210,6 +210,11 @@ fn asset_response(client: &Client, asset: &Asset) -> Result<reqwest::blocking::R
                 .starts_with(&format!("/{REPOSITORY}/releases/download/")),
         "untrusted release asset URL"
     );
+    Ok(url)
+}
+
+fn asset_response(client: &Client, asset: &Asset) -> Result<reqwest::blocking::Response> {
+    let url = asset_url(&asset.browser_download_url)?;
     Ok(client.get(url).send()?.error_for_status()?)
 }
 
