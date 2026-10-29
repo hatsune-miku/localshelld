@@ -16,6 +16,7 @@ fn fixture() -> App {
         binaries: super::super::bundle::Manifest(std::collections::BTreeMap::new()),
         user_config: PathBuf::from("fixture-user.toml"),
         owner: "fixture".into(),
+        agents: vec![],
         busy: AtomicBool::new(false),
         job: Mutex::new(Job::default()),
         shutdown: tokio::sync::Notify::new(),
@@ -128,7 +129,16 @@ async fn setup_surface_is_bounded_and_has_no_shell_or_daemon_routes() {
 async fn active_installation_cannot_be_closed_or_started_twice() {
     let state = fixture();
     state.busy.store(true, Ordering::SeqCst);
-    assert!(start_job(state.clone(), Operation::Install, Zeroizing::new(None)).is_err());
+    assert!(
+        start_job(
+            state.clone(),
+            Operation::Install,
+            Zeroizing::new(None),
+            vec![],
+            false
+        )
+        .is_err()
+    );
     let response = router(state)
         .oneshot(
             Request::post("/setup/v1/close")
@@ -152,4 +162,24 @@ fn plan_never_accepts_arbitrary_programs_or_installation_targets() {
         malicious[key] = json!("arbitrary");
         assert!(serde_json::from_value::<Plan>(malicious).is_err());
     }
+}
+
+#[tokio::test]
+async fn unknown_agent_is_rejected_before_installation_starts() {
+    let state = fixture();
+    let response = router(state.clone())
+        .oneshot(
+            Request::post("/setup/v1/install")
+                .header("host", "127.0.0.1:31991")
+                .header("authorization", "Bearer fixture-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"password":null,"agents":["../../arbitrary"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(!state.busy.load(Ordering::SeqCst));
 }

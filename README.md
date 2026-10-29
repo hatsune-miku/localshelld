@@ -37,7 +37,15 @@ Windows 包含 `trustd-system.exe`，macOS/Linux 包含 `trustd-root`；每个�
 
 ## 安装
 
-下载并解压完整平台发布包，以普通登录用户运行 `trustd` 或 `trustd maintenance`。Windows 可直接双击 `trustd.exe`。向导会在需要时请求 UAC、macOS 管理员授权或 Linux polkit 授权。
+下载并解压完整平台发布包，从对应入口开始：
+
+| 平台 | 安装入口 |
+| --- | --- |
+| Windows | 双击 `INSTALL.cmd` |
+| macOS | 双击 `INSTALL.command` |
+| Linux | 在解压目录运行 `./INSTALL.sh` |
+
+包内 `START-HERE.txt` 提供简短说明。四个程序是配套组件，无需逐个运行，也不要单独拖出安装入口。仍可用 `trustd` 或 `trustd maintenance` 启动向导。以普通登录用户运行，向导会在需要时请求 UAC、macOS 管理员授权或 Linux polkit 授权。
 
 前置条件：
 
@@ -61,11 +69,19 @@ Windows 包含 `trustd-system.exe`，macOS/Linux 包含 `trustd-root`；每个�
 
 每套程序安装到 `versions/<整套摘要>/`。摘要覆盖四个程序的文件名与内容；提权前暂存、提权后安装均重新校验。程序目录可读、可执行，但普通用户不可写；系统配置和备份仅供系统管理员访问。用户数据仍在原有 `localshelld-user` 平台目录，安装不修改 PATH。
 
+macOS 的完整程序路径是 `/Library/trustd/versions/<整套摘要>/`，用户配置位于 `~/Library/Application Support/dev.localshelld.localshelld-user/config.toml`，维护入口是 `~/Applications/trustd.app`。系统服务由 `/Library/LaunchDaemons/dev.localshelld.plist` 注册。数据目录沿用 `localshelld` 名称以兼容已有安装。
+
 迁移保留旧程序，备份原配置、`config.authorization.json` 和同目录的 `seal.key`。系统安装失败会尝试恢复原注册；用户自启动失败会明确报告，可以重新修复。卸载只停止并注销服务，保留程序、配置和备份。更新和重启会中断执行会话，使相应 daemon 签发的运行期令牌失效。
 
 `trustd maintenance --no-open` 只打印向导地址。本次链接是临时管理凭据，不应分享；退出向导或 30 分钟后结束监听。
 
 ## 接入 AI：推荐 stdio
+
+向导的“安装选项”可自动配置 Codex、Claude Code、Claude Desktop、Cursor、Windsurf、VS Code、Gemini CLI 和 Devin Desktop。默认不勾选；只写入所选客户端的用户级配置。VS Code 使用默认本地用户配置，便携版、自定义 profile 和远端配置需手动接入。
+
+配置指向本次安装目录内的 `trustd-stdio`，使用实际用户 daemon 地址。其他条目和注释保留，已有文件先保存同目录的 `*.trustd-backup-*` 备份；替换已有 `trustd` 条目需另行勾选。各客户端的结果和备份位置分别显示，单个配置失败不影响服务安装。升级后可重新勾选客户端以切换到新版本，旧版本目录不会自动删除。完成后重启客户端。
+
+配置格式参照 [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp)、[Claude Code MCP](https://code.claude.com/docs/en/mcp)、[VS Code MCP](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) 等官方文档。向导只写配置，不修改客户端的工具审批设置。
 
 在支持 stdio 的 MCP 宿主中配置完整安装路径：
 

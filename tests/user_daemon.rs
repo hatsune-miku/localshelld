@@ -43,6 +43,43 @@ async fn windowless_user_daemon_keeps_the_native_desktop_event_loop_and_http_ali
     verify_user_daemon(false).await;
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn background_user_daemon_has_accessory_policy_and_keeps_http_alive() {
+    verify_user_daemon(false).await;
+}
+
+#[cfg(target_os = "macos")]
+async fn assert_accessory_process(pid: u32) {
+    // Read AppKit's policy for only our disposable child. This needs neither
+    // Accessibility permissions nor System Events automation access.
+    let script = format!(
+        "ObjC.import('AppKit'); const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier({pid}); app.isNil() ? -1 : Number(app.activationPolicy);"
+    );
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let output = tokio::process::Command::new("/usr/bin/osascript")
+                .args(["-l", "JavaScript", "-e", &script])
+                .kill_on_drop(true)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "AppKit policy probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if String::from_utf8_lossy(&output.stdout).trim() == "1" {
+                // Accessory (1), not Regular (0) or Prohibited (2).
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("GUI user daemon must use the accessory activation policy");
+}
+
 async fn verify_user_daemon(headless: bool) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("user/config.toml");
@@ -110,6 +147,10 @@ async fn verify_user_daemon(headless: bool) {
     .await
     .unwrap();
     assert_eq!(health["daemon"], "user");
+    #[cfg(target_os = "macos")]
+    if !headless {
+        assert_accessory_process(daemon.0.id()).await;
+    }
     let page = client
         .get(format!("{base}/"))
         .send()

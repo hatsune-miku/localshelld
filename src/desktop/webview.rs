@@ -49,9 +49,20 @@ pub fn available() -> bool {
 
 impl Desktop {
     pub fn new() -> Result<Self> {
-        Ok(Self {
-            event_loop: EventLoopBuilder::<GuiEvent>::with_user_event().build(),
-        })
+        let event_loop = EventLoopBuilder::<GuiEvent>::with_user_event().build();
+        #[cfg(target_os = "macos")]
+        let event_loop = {
+            use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+
+            let mut event_loop = event_loop;
+            // launchd starts the bare user daemon, not the maintenance .app.
+            // Accessory hides its Dock/menu-bar presence but still permits
+            // consent windows to activate; Prohibited would disable that UI.
+            event_loop.set_activation_policy(ActivationPolicy::Accessory);
+            event_loop.set_activate_ignoring_other_apps(false);
+            event_loop
+        };
+        Ok(Self { event_loop })
     }
 
     pub fn broker(&self) -> ConsentBroker {

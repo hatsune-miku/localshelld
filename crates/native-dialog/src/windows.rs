@@ -21,7 +21,7 @@ use windows_sys::{
         UI::{
             Controls::{BST_CHECKED, EM_SETLIMITTEXT},
             HiDpi::*,
-            Input::KeyboardAndMouse::SetFocus,
+            Input::KeyboardAndMouse::{SetFocus, VK_ESCAPE, VK_RETURN, VK_SPACE},
             WindowsAndMessaging::*,
         },
     },
@@ -231,11 +231,10 @@ impl EventLoop {
                 }
             }
             if message.hwnd != self.dispatcher || message.message != WAKE {
-                let handled = self.windows.values().any(|window| {
-                    // SAFETY: Window owns the HWND on this thread. Windows can
-                    // synchronously call dialog_proc, whose state is heap-stable.
-                    window.alive() && unsafe { IsDialogMessageW(window.hwnd, &message) } != 0
-                });
+                let handled = self
+                    .windows
+                    .values()
+                    .any(|window| window.handle_dialog_message(&message));
                 if !handled {
                     unsafe {
                         TranslateMessage(&message);
@@ -366,7 +365,35 @@ impl Window {
             );
             // Windows may decline foreground activation; do not bypass its rules.
             SetForegroundWindow(self.hwnd);
-            SetFocus(GetDlgItem(self.hwnd, IDCANCEL));
+            SetFocus(GetDlgItem(self.hwnd, NOTE));
+        }
+    }
+
+    fn handle_dialog_message(&self, message: &MSG) -> bool {
+        // SAFETY: all HWNDs belong to this UI thread. Only route this dialog's
+        // messages; another pending request must not consume its keyboard input.
+        unsafe {
+            if !self.alive() || (message.hwnd != self.hwnd && IsChild(self.hwnd, message.hwnd) == 0)
+            {
+                return false;
+            }
+            if (WM_KEYFIRST..=WM_KEYLAST).contains(&message.message) {
+                let key = message.wParam;
+                let action_button = [IDOK, IDNO, IDCANCEL]
+                    .into_iter()
+                    .any(|id| message.hwnd == GetDlgItem(self.hwnd, id));
+                // No keyboard shortcut may submit a decision, even after focus
+                // moves to an action button. Enter still inserts a note newline;
+                // Tab, text editing and the remember checkbox remain usable.
+                if key == VK_ESCAPE as usize
+                    || (key == VK_RETURN as usize && message.hwnd != GetDlgItem(self.hwnd, NOTE))
+                    || (key == VK_SPACE as usize && action_button)
+                {
+                    return true;
+                }
+            }
+            // The state allocation remains stable during synchronous callbacks.
+            IsDialogMessageW(self.hwnd, message) != 0
         }
     }
 
@@ -558,17 +585,10 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
         SS_NOPREFIX_STYLE,
         0,
     )?;
-    child(hwnd, w!("STATIC"), "请求缘由(&R)：", REASON_LABEL, 0, 0)?;
+    child(hwnd, w!("STATIC"), "请求缘由：", REASON_LABEL, 0, 0)?;
     let edit_style = WS_TABSTOP | WS_VSCROLL | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32;
     if !state.secret_keys.is_empty() {
-        child(
-            hwnd,
-            w!("STATIC"),
-            "请求注入的凭据(&K)：",
-            SECRETS_LABEL,
-            0,
-            0,
-        )?;
+        child(hwnd, w!("STATIC"), "请求注入的凭据：", SECRETS_LABEL, 0, 0)?;
         child(
             hwnd,
             w!("EDIT"),
@@ -586,7 +606,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
         edit_style | ES_READONLY as u32,
         WS_EX_CLIENTEDGE,
     )?;
-    child(hwnd, w!("STATIC"), "附加说明(&N)：", NOTE_LABEL, 0, 0)?;
+    child(hwnd, w!("STATIC"), "附加说明：", NOTE_LABEL, 0, 0)?;
     child(
         hwnd,
         w!("EDIT"),
@@ -599,7 +619,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
     child(
         hwnd,
         w!("BUTTON"),
-        &format!("记住对 {agent} 的选择；新增凭据需再次授权(&M)"),
+        &format!("记住对 {agent} 的选择；新增凭据需再次授权"),
         REMEMBER,
         WS_TABSTOP | BS_AUTOCHECKBOX as u32 | BS_MULTILINE as u32,
         0,
@@ -607,7 +627,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
     child(
         hwnd,
         w!("BUTTON"),
-        "忽略(&I)",
+        "忽略",
         IDCANCEL,
         WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
         0,
@@ -615,7 +635,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
     child(
         hwnd,
         w!("BUTTON"),
-        "拒绝(&D)",
+        "拒绝",
         IDNO,
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
@@ -623,7 +643,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
     child(
         hwnd,
         w!("BUTTON"),
-        "接受(&A)",
+        "接受",
         IDOK,
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
@@ -657,7 +677,7 @@ fn initialize(hwnd: HWND, state: &WindowState) -> io::Result<()> {
         if SetTimer(hwnd, 1, 200, None) == 0 {
             return Err(io::Error::last_os_error());
         }
-        SetFocus(GetDlgItem(hwnd, IDCANCEL));
+        SetFocus(GetDlgItem(hwnd, NOTE));
     }
     Ok(())
 }
@@ -1198,6 +1218,74 @@ exit $child.ExitCode
     }
 
     #[test]
+    fn typing_and_former_shortcuts_never_submit_a_decision() {
+        let (window, outcome) = fixture(Instant::now() + Duration::from_secs(60));
+        unsafe {
+            for (id, label) in [(IDOK, "接受"), (IDNO, "拒绝"), (IDCANCEL, "忽略")] {
+                assert_eq!(text(GetDlgItem(window.hwnd, id)), label);
+            }
+            for id in [NOTE, REASON, REMEMBER, IDOK, IDNO, IDCANCEL] {
+                let control = GetDlgItem(window.hwnd, id);
+                SetFocus(control);
+                for kind in [WM_CHAR, WM_SYSCHAR] {
+                    for key in "aAdiIkrnmADIKRNM".chars() {
+                        let message = MSG {
+                            hwnd: control,
+                            message: kind,
+                            wParam: key as usize,
+                            ..Default::default()
+                        };
+                        if !window.handle_dialog_message(&message) {
+                            DispatchMessageW(&message);
+                        }
+                        assert!(
+                            window.alive(),
+                            "character {key} submitted from control {id}"
+                        );
+                    }
+                }
+                for kind in [
+                    WM_KEYDOWN,
+                    WM_KEYUP,
+                    WM_CHAR,
+                    WM_SYSKEYDOWN,
+                    WM_SYSKEYUP,
+                    WM_SYSCHAR,
+                ] {
+                    for key in [VK_RETURN, VK_ESCAPE, VK_SPACE] {
+                        let message = MSG {
+                            hwnd: control,
+                            message: kind,
+                            wParam: key as usize,
+                            ..Default::default()
+                        };
+                        if !window.handle_dialog_message(&message) {
+                            DispatchMessageW(&message);
+                        }
+                        assert!(window.alive(), "key {key} submitted from control {id}");
+                    }
+                }
+            }
+            let note = GetDlgItem(window.hwnd, NOTE);
+            SetWindowTextW(note, w!(""));
+            SetFocus(note);
+            for key in "aA dD iI\r第二行".chars() {
+                let message = MSG {
+                    hwnd: note,
+                    message: WM_CHAR,
+                    wParam: key as usize,
+                    ..Default::default()
+                };
+                if !window.handle_dialog_message(&message) {
+                    DispatchMessageW(&message);
+                }
+            }
+            assert_eq!(text(note), "aA dD iI\r\n第二行");
+        }
+        assert!(matches!(outcome.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
     fn accept_and_deny_are_single_use_and_preserve_note_and_checkbox() {
         for (id, choice) in [(IDOK, Choice::Accept), (IDNO, Choice::Deny)] {
             let (window, outcome) = fixture(Instant::now() + Duration::from_secs(60));
@@ -1212,12 +1300,7 @@ exit $child.ExitCode
                     BST_CHECKED as usize,
                     0,
                 );
-                SendMessageW(
-                    window.hwnd,
-                    WM_COMMAND,
-                    id as usize,
-                    GetDlgItem(window.hwnd, id) as isize,
-                );
+                SendMessageW(GetDlgItem(window.hwnd, id), BM_CLICK, 0, 0);
             }
             let outcome = outcome.recv_timeout(Duration::from_secs(1)).unwrap();
             assert_eq!(outcome.choice, choice);

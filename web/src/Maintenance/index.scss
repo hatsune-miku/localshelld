@@ -158,6 +158,107 @@
     padding-top: 20px;
     border-top: 1px solid var(--line);
   }
+  .maintenance-agent-options {
+    border: 0;
+    padding: 0;
+    margin: 12px 0 0;
+    min-width: 0;
+  }
+  .maintenance-agent-legend {
+    padding: 0;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  .maintenance-agent-description {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 10px 0 16px;
+  }
+  .maintenance-agent-list {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--line);
+  }
+  .maintenance-agent {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    &:has(.maintenance-agent-checkbox:checked) {
+      background: #edf2f8;
+    }
+  }
+  .maintenance-agent-checkbox {
+    width: 17px;
+    height: 17px;
+    flex: 0 0 17px;
+    margin: 3px 0 0;
+    accent-color: var(--accent);
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+  }
+  .maintenance-agent-info {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+    flex: 1;
+  }
+  .maintenance-agent-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px 12px;
+  }
+  .maintenance-agent-name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .maintenance-agent-detected {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .maintenance-agent-path {
+    font-size: 12px;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+    line-height: 1.6;
+  }
+  .maintenance-agent-replace {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin-top: 16px;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .maintenance-agent-results {
+    margin-top: 24px;
+  }
+  .maintenance-agent-result {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .maintenance-agent-status {
+    font-size: 13px;
+    color: #326346;
+    &[data-error='true'] {
+      color: #a12b2b;
+    }
+  }
+  .maintenance-agent-details {
+    margin-top: 8px;
+  }
+  .maintenance-agent-summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 13px;
+  }
   .maintenance-progress {
     display: flex;
     align-items: center;

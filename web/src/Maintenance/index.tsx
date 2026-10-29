@@ -7,7 +7,15 @@ import { api } from '../api'
 
 import './index.scss'
 
-type Job = { running: boolean; stage: string; error: string | null; completed: 'install' | 'uninstall' | null }
+type Agent = { id: string; name: string; path: string; detected: boolean }
+type AgentResult = { name: string; path: string; backup: string | null; error: string | null }
+type Job = {
+  running: boolean
+  stage: string
+  error: string | null
+  completed: 'install' | 'uninstall' | null
+  agents: AgentResult[]
+}
 type Info = {
   version: string
   platform: string
@@ -24,15 +32,17 @@ type Info = {
   elevation_available: boolean
   user_url: string
   system_url: string
+  agents: Agent[]
   job: Job
 }
 
-const steps = ['检查安装', '初始化', '安装服务', '完成']
+const steps = ['检查安装', '安装选项', '安装服务', '完成']
 const platforms: Record<string, string> = { windows: 'Windows', macos: 'macOS', linux: 'Linux' }
 const stages: Record<string, string> = {
   preparing: '准备安装文件',
   elevation: '等待系统授权并安装服务',
   user_service: '启动用户服务并验证安装',
+  agents: '配置 AI agent',
   failed: '安装未完成',
   done: '操作完成',
 }
@@ -45,6 +55,8 @@ export function Maintenance({ token }: { token: string }) {
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
   const [closed, setClosed] = useState(false)
+  const [selectedAgents, setSelectedAgents] = useState<string[]>([])
+  const [replaceAgents, setReplaceAgents] = useState(false)
   const busy = sending || !!info?.job.running
   const needsPassword = !!info && (!info.registered || !info.user_initialized)
 
@@ -80,7 +92,9 @@ export function Maintenance({ token }: { token: string }) {
     try {
       await api(
         `/setup/v1/${operation}`,
-        operation === 'install' ? { password: needsPassword ? password : null } : {},
+        operation === 'install'
+          ? { password: needsPassword ? password : null, agents: selectedAgents, replace_agents: replaceAgents }
+          : {},
         token
       )
       setPassword('')
@@ -274,6 +288,45 @@ export function Maintenance({ token }: { token: string }) {
                     使用当前版本重新安装服务、迁移旧目录并修复目录权限。管理密码和凭据保持不变。
                   </p>
                 )}
+                <fieldset className="maintenance-agent-options" disabled={busy}>
+                  <legend className="maintenance-agent-legend">自动配置 AI agent</legend>
+                  <p className="maintenance-agent-description">选择需要接入的客户端，也可稍后手动配置。</p>
+                  <div className="maintenance-agent-list">
+                    {info.agents.map((agent) => (
+                      <label className="maintenance-agent" key={agent.id}>
+                        <input
+                          className="maintenance-agent-checkbox"
+                          type="checkbox"
+                          checked={selectedAgents.includes(agent.id)}
+                          onChange={(event) => {
+                            const checked = event.currentTarget.checked
+                            setSelectedAgents((current) =>
+                              checked ? [...current, agent.id] : current.filter((id) => id !== agent.id)
+                            )
+                          }}
+                        />
+                        <span className="maintenance-agent-info">
+                          <span className="maintenance-agent-title">
+                            <span className="maintenance-agent-name">{agent.name}</span>
+                            {agent.detected && <span className="maintenance-agent-detected">已找到配置</span>}
+                          </span>
+                          <span className="maintenance-agent-path">{agent.path}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {selectedAgents.length > 0 && (
+                    <label className="maintenance-agent-replace">
+                      <input
+                        className="maintenance-agent-checkbox"
+                        type="checkbox"
+                        checked={replaceAgents}
+                        onChange={(event) => setReplaceAgents(event.currentTarget.checked)}
+                      />
+                      替换所选客户端已有的 trustd 配置，保留备份
+                    </label>
+                  )}
+                </fieldset>
                 <dl className="maintenance-checks">
                   <div className="maintenance-check">
                     <dt className="maintenance-check-label">安装版本</dt>
@@ -326,6 +379,32 @@ export function Maintenance({ token }: { token: string }) {
                 ) : (
                   <>
                     <p className="description">系统服务和用户服务已启动。</p>
+                    {info.job.agents.length > 0 && (
+                      <section className="maintenance-agent-results" aria-label="AI agent 配置结果">
+                        <h3 className="subsection-title">AI agent 配置</h3>
+                        {info.job.agents.map((agent) => (
+                          <div className="maintenance-agent-result" key={agent.path}>
+                            <div className="maintenance-agent-title">
+                              <span className="maintenance-agent-name">{agent.name}</span>
+                              <span className="maintenance-agent-status" data-error={!!agent.error}>
+                                {agent.error ? '未配置' : '已配置'}
+                              </span>
+                            </div>
+                            {agent.error && <Feedback message={agent.error} error />}
+                            <details className="maintenance-agent-details">
+                              <summary className="maintenance-agent-summary">
+                                配置文件{agent.backup ? '与备份' : ''}
+                              </summary>
+                              <p className="maintenance-agent-path">{agent.path}</p>
+                              {agent.backup && <p className="maintenance-agent-path">备份：{agent.backup}</p>}
+                            </details>
+                          </div>
+                        ))}
+                        <p className="maintenance-note">
+                          重启已配置的客户端以加载 trustd。未完成的配置可返回安装选项重试。
+                        </p>
+                      </section>
+                    )}
                     <div className="maintenance-links">
                       <a className="maintenance-management-link" href={info.user_url} target="_blank" rel="noreferrer">
                         打开用户管理

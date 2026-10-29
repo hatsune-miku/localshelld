@@ -1,5 +1,6 @@
 //! Ephemeral, unprivileged setup UI. The privileged helper accepts a digest-bound
 //! plan with a closed set of operations, not commands or installation paths.
+mod agents;
 mod apply;
 mod platform;
 
@@ -57,6 +58,10 @@ struct Plan {
 #[serde(deny_unknown_fields)]
 struct InstallRequest {
     password: Option<String>,
+    #[serde(default)]
+    agents: Vec<String>,
+    #[serde(default)]
+    replace_agents: bool,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -65,6 +70,7 @@ struct Job {
     stage: String,
     error: Option<String>,
     completed: Option<String>,
+    agents: Vec<agents::Outcome>,
 }
 
 struct Inner {
@@ -76,6 +82,7 @@ struct Inner {
     binaries: super::bundle::Manifest,
     user_config: PathBuf,
     owner: String,
+    agents: Vec<agents::Agent>,
     busy: AtomicBool,
     job: Mutex<Job>,
     shutdown: tokio::sync::Notify,
@@ -107,6 +114,7 @@ pub async fn run(no_open: bool) -> Result<()> {
         binaries,
         user_config: user_config_path()?,
         owner: platform::owner()?,
+        agents: agents::catalog()?,
         busy: AtomicBool::new(false),
         job: Mutex::new(Job::default()),
         shutdown: tokio::sync::Notify::new(),
@@ -214,6 +222,7 @@ fn snapshot(state: &Inner) -> Result<Value> {
         "user_url": format!("http://localhost:{}/", user.as_ref().map_or(localshelld::config::USER_PORT, |value| value.bind.port())),
         "system_url": format!("http://localhost:{}/", user.as_ref().map_or(localshelld::config::DEFAULT_PORT, |value| value.privileged_daemon.port())),
         "job": job,
+        "agents": state.agents,
     }))
 }
 
@@ -229,6 +238,8 @@ fn start_job(
     state: App,
     operation: Operation,
     password: Zeroizing<Option<String>>,
+    selected: Vec<String>,
+    replace_agents: bool,
 ) -> Result<Json<Value>, ApiError> {
     if state
         .busy
@@ -243,12 +254,13 @@ fn start_job(
         ..Job::default()
     };
     tokio::task::spawn_blocking(move || {
-        let result = execute(&state, operation, password);
+        let result = execute(&state, operation, password, &selected, replace_agents);
         *state.job.lock().unwrap() = Job {
             running: false,
             stage: if result.is_ok() { "done" } else { "failed" }.into(),
             error: result.as_ref().err().map(|error| format!("{error:#}")),
-            completed: result.ok().map(|()| {
+            agents: result.as_ref().ok().cloned().unwrap_or_default(),
+            completed: result.ok().map(|_| {
                 if operation == Operation::Install {
                     "install"
                 } else {
@@ -266,6 +278,8 @@ async fn install(
     State(state): State<App>,
     Json(mut body): Json<InstallRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    agents::validate(&body.agents, &state.agents)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
     if body
         .password
         .as_ref()
@@ -277,13 +291,21 @@ async fn install(
         state,
         Operation::Install,
         Zeroizing::new(body.password.take()),
+        std::mem::take(&mut body.agents),
+        body.replace_agents,
     )
 }
 async fn uninstall(
     State(state): State<App>,
     Json(_): Json<serde_json::Map<String, Value>>,
 ) -> Result<Json<Value>, ApiError> {
-    start_job(state, Operation::Uninstall, Zeroizing::new(None))
+    start_job(
+        state,
+        Operation::Uninstall,
+        Zeroizing::new(None),
+        vec![],
+        false,
+    )
 }
 async fn close(
     State(state): State<App>,
@@ -300,7 +322,9 @@ fn execute(
     state: &Inner,
     operation: Operation,
     mut password: Zeroizing<Option<String>>,
-) -> Result<()> {
+    selected: &[String],
+    replace_agents: bool,
+) -> Result<Vec<agents::Outcome>> {
     ensure!(
         platform::elevation_available(),
         "系统提权工具不可用；Linux 需要安装 polkit/pkexec。"
@@ -401,11 +425,20 @@ fn execute(
         )?;
         super::user_service::verify_running_at(&user_executable, &state.user_config)?;
         platform::shortcut(&executable)?;
+        set_stage(state, "agents");
+        let stdio = super::bundle::beside(&executable, "trustd-stdio")?;
+        return Ok(agents::configure(
+            &state.agents,
+            selected,
+            &stdio,
+            user.bind,
+            replace_agents,
+        ));
     } else {
         #[cfg(not(windows))]
         super::user_service::uninstall()?;
     }
-    Ok(())
+    Ok(vec![])
 }
 
 fn set_stage(state: &Inner, stage: &str) {
